@@ -10,6 +10,7 @@
   <script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://unpkg.com/tesseract.js@4/dist/tesseract.min.js"></script>
   <script>tailwind.config={theme:{extend:{fontFamily:{sans:['Heebo','sans-serif']}}}};</script>
   <style>
     *{font-family:'Heebo','Segoe UI',sans-serif;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
@@ -50,10 +51,12 @@ const { useState, useEffect, useMemo, useCallback, useRef } = React;
 const LS = {
   DONE:'fil_done', PROFILE:'fil_profile', TX:'fil_tx',
   RECURRING:'fil_rec', INV:'fil_inv', FINNHUB:'fil_fh',
+  BUDGET:'fil_budget',
 };
+const LS_ALL_KEYS = [...Object.values(LS), 'fil_portfolio','fil_savings','fil_mm_list','fil_budget'];
 const lsGet = (k,fb) => { try{ const v=localStorage.getItem(k); return v!==null?JSON.parse(v):fb; }catch{ return fb; } };
 const lsSet = (k,v) => { try{ localStorage.setItem(k,JSON.stringify(v)); }catch{} };
-const lsClear = () => Object.values(LS).forEach(k=>localStorage.removeItem(k));
+const lsClear = () => LS_ALL_KEYS.forEach(k=>localStorage.removeItem(k));
 
 /* ── CATEGORIES ── */
 const CAT_RULES = [
@@ -84,7 +87,7 @@ function categorize(desc) {
 }
 
 /* ── BUDGET CALC ── */
-const BUDGET_PLAN = [
+const DEFAULT_BUDGET_PLAN = [
   {key:'דיור',       pct:30, color:'#64748B', emoji:'🏠'},
   {key:'מזון ושוק',  pct:15, color:'#22C55E', emoji:'🛒'},
   {key:'תחבורה',     pct:10, color:'#3B82F6', emoji:'🚌'},
@@ -100,8 +103,9 @@ const CAT_TO_BUDGET = {
   'חשבונות בית':'חשבונות','ביטוח':'חשבונות','בריאות':'בריאות','קניות':'שונות',
   'דיור':'דיור','אחר':'שונות',
 };
-function calcBudget(netSalary) {
-  return BUDGET_PLAN.map(b => ({...b, amount: Math.round(netSalary * b.pct / 100)}));
+function loadBudgetPlan() { return lsGet(LS.BUDGET, DEFAULT_BUDGET_PLAN); }
+function calcBudget(netSalary, plan) {
+  return (plan||loadBudgetPlan()).map(b => ({...b, amount: Math.round(netSalary * b.pct / 100)}));
 }
 function spentPerBudget(txs, budget) {
   const map = {};
@@ -514,10 +518,10 @@ function AddModal({onClose,onAdd}) {
 }
 
 /* ── DASHBOARD ── */
-function Dashboard({profile,txs,onAdd}) {
+function Dashboard({profile,txs,onAdd,budgetPlan}) {
   const [showAdd,setShowAdd]=useState(false);
   const net=profile.netSalary||0;
-  const budget=useMemo(()=>calcBudget(net),[net]);
+  const budget=useMemo(()=>calcBudget(net,budgetPlan),[net,budgetPlan]);
   const spent=useMemo(()=>spentPerBudget(txs,budget),[txs,budget]);
 
   // Monthly totals
@@ -650,8 +654,278 @@ function TransactionsTab({txs,onAdd,onDelete}) {
   );
 }
 
+/* ── OCR HELPERS ── */
+function parseDateIL(s) {
+  // handles DD/MM/YYYY  DD.MM.YYYY  DD-MM-YYYY  YYYY-MM-DD
+  const clean=s.replace(/[.\-]/g,'/');
+  const parts=clean.split('/');
+  if(parts.length===3) {
+    const [a,b,c]=parts.map(Number);
+    const yr=c>31?c:(a>31?a:null);
+    if(yr) {
+      const [d,m]=c>31?[a,b]:[b,a];
+      const dt=new Date(yr,m-1,d);
+      if(!isNaN(dt)) return dt.toISOString().split('T')[0];
+    }
+  }
+  const d=new Date(s); return isNaN(d)?null:d.toISOString().split('T')[0];
+}
+function parseBankOCR(text) {
+  const DATE_RE  = /\b(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}|\d{4}[./\-]\d{2}[./\-]\d{2})\b/g;
+  const AMT_RE   = /(-?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)/g;
+  const results  = [];
+  const lines    = text.split('\n').map(l=>l.trim()).filter(l=>l.length>4);
+  for (const line of lines) {
+    const dateMatch=line.match(DATE_RE);
+    if(!dateMatch) continue;
+    const date=parseDateIL(dateMatch[0]);
+    if(!date) continue;
+    // collect amounts on this line (ignore the balance column if multiple)
+    const amts=[...(line.matchAll(AMT_RE)||[])].map(m=>parseFloat(m[1].replace(/,/g,''))).filter(n=>!isNaN(n)&&Math.abs(n)>0.5);
+    if(!amts.length) continue;
+    // The largest-abs value is usually the transaction, smallest is often qty/shares
+    const amount=amts.reduce((best,n)=>Math.abs(n)>Math.abs(best)?n:best,amts[0]);
+    // description = everything after date, before first amount
+    const dateEnd=line.search(DATE_RE)+dateMatch[0].length;
+    const afterDate=line.slice(dateEnd).trim();
+    const desc=afterDate.replace(AMT_RE,'').replace(/\s+/g,' ').trim();
+    if(desc.length<2) continue;
+    const cat=categorize(desc);
+    results.push({id:Date.now()+results.length,description:desc,amount:Math.round(amount*100)/100,
+                  date,cat:cat.cat,color:cat.color,emoji:cat.emoji,account:'צילום מסך'});
+  }
+  return results;
+}
+
+/* ── SCREENSHOT IMPORT ── */
+function ScreenshotImport({onImport}) {
+  const [imgUrl, setImgUrl]     = useState(null);
+  const [stage,  setStage]      = useState('upload'); // upload|ocr|preview|done
+  const [prog,   setProg]       = useState(0);
+  const [parsed, setParsed]     = useState([]);
+  const [ocrErr, setOcrErr]     = useState(null);
+  const [rows,   setRows]       = useState([]); // manual editable rows
+  const fileRef = useRef();
+
+  async function handleFile(file) {
+    if (!file.type.startsWith('image/')) { setOcrErr('יש להעלות תמונה (PNG/JPG)'); return; }
+    const url=URL.createObjectURL(file);
+    setImgUrl(url); setOcrErr(null); setStage('ocr'); setProg(0);
+    try {
+      if (typeof Tesseract === 'undefined') throw new Error('Tesseract not loaded');
+      const result = await Tesseract.recognize(file,'heb+eng',{
+        logger: m => { if(m.status==='recognizing text') setProg(Math.round((m.progress||0)*100)); }
+      });
+      const txs = parseBankOCR(result.data.text);
+      if (txs.length===0) {
+        // no structured data found → show raw text for user to review
+        setRows([{id:1,description:'',amount:'',date:new Date().toISOString().split('T')[0]}]);
+        setOcrErr('לא זוהו עסקאות אוטומטית — הזן ידנית');
+      } else {
+        setParsed(txs);
+      }
+      setStage('preview');
+    } catch(e) {
+      // Fallback: show image + manual entry
+      setRows([{id:Date.now(),description:'',amount:'',date:new Date().toISOString().split('T')[0]}]);
+      setOcrErr('OCR לא זמין — הזן ידנית על פי הצילום');
+      setStage('preview');
+    }
+  }
+
+  function addRow(){setRows(r=>[...r,{id:Date.now(),description:'',amount:'',date:new Date().toISOString().split('T')[0]}]);}
+  function delRow(id){setRows(r=>r.filter(x=>x.id!==id));}
+  function editRow(id,k,v){setRows(r=>r.map(x=>x.id===id?{...x,[k]:v}:x));}
+
+  function confirm() {
+    const finalTxs = parsed.length>0 ? parsed : rows.filter(r=>r.description&&r.amount!=='').map(r=>{
+      const amt=parseFloat(r.amount)||0;
+      const cat=categorize(r.description);
+      return{...r,id:Date.now()+Math.random(),amount:Math.round(amt*100)/100,
+             cat:cat.cat,color:cat.color,emoji:cat.emoji,account:'צילום מסך'};
+    });
+    if(finalTxs.length>0){onImport(finalTxs);setStage('done');}
+  }
+
+  return (
+    <div>
+      {stage==='upload'&&(
+        <div>
+          <div className="card" style={{padding:28,textAlign:'center'}}>
+            <div style={{fontSize:48,marginBottom:12}}>📸</div>
+            <p style={{fontSize:17,fontWeight:700,marginBottom:8}}>העלה צילום מסך</p>
+            <p style={{fontSize:13,color:'#6B7280',marginBottom:20,lineHeight:1.6}}>
+              צלם את מסך העסקאות בבנק / בחשבון ההשקעות<br/>
+              המערכת תנסה לזהות עסקאות אוטומטית (OCR)
+            </p>
+            <input ref={fileRef} type="file" accept="image/*" style={{display:'none'}}
+                   onChange={e=>e.target.files[0]&&handleFile(e.target.files[0])}/>
+            <button className="btn-primary" onClick={()=>fileRef.current.click()}>📂 בחר תמונה</button>
+            <div onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#22C55E';}}
+                 onDragLeave={e=>{e.currentTarget.style.borderColor='#e5e7eb';}}
+                 onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#e5e7eb';
+                             e.dataTransfer.files[0]&&handleFile(e.dataTransfer.files[0]);}}
+                 style={{border:'2px dashed #e5e7eb',borderRadius:14,padding:20,marginTop:14,
+                         color:'#9CA3AF',fontSize:13,transition:'border-color .2s',cursor:'pointer'}}
+                 onClick={()=>fileRef.current.click()}>
+              או גרור תמונה לכאן
+            </div>
+          </div>
+          <div className="card" style={{padding:14,marginTop:14,background:'#fffbeb',border:'1px solid #fde68a'}}>
+            <p style={{fontSize:13,fontWeight:700,color:'#92400e',marginBottom:6}}>💡 טיפ לצילום מסך טוב יותר:</p>
+            <ul style={{fontSize:12,color:'#78350f',margin:0,padding:'0 16px',lineHeight:1.9}}>
+              <li>צלם ממסך מחשב ולא ממובייל לדיוק גבוה יותר</li>
+              <li>ודא שהעמודות תאריך, תיאור, סכום גלויות</li>
+              <li>הפועלים: "תנועות בחשבון" → "ייצוא" ← או צלם</li>
+              <li>Max: "עסקאות" → גלול לכל העסקאות</li>
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {stage==='ocr'&&(
+        <div className="card" style={{padding:40,textAlign:'center'}}>
+          <div style={{fontSize:48,marginBottom:16}}>🔍</div>
+          <p style={{fontSize:17,fontWeight:700,marginBottom:8}}>מזהה טקסט...</p>
+          <div style={{height:8,background:'#f3f4f6',borderRadius:4,margin:'16px 0'}}>
+            <div style={{height:'100%',width:`${prog}%`,background:'#22C55E',borderRadius:4,transition:'width .3s'}}/>
+          </div>
+          <p style={{fontSize:13,color:'#9CA3AF'}}>{prog}% · OCR עברית + אנגלית</p>
+          {imgUrl&&<img src={imgUrl} style={{maxWidth:'100%',borderRadius:12,marginTop:16,maxHeight:200,objectFit:'contain'}} alt=""/>}
+        </div>
+      )}
+
+      {stage==='preview'&&(
+        <div>
+          <div style={{display:'flex',gap:10,alignItems:'flex-start',marginBottom:14}}>
+            {imgUrl&&<img src={imgUrl} style={{width:80,height:80,borderRadius:10,objectFit:'cover',flexShrink:0}} alt=""/>}
+            <div>
+              <p style={{margin:0,fontSize:16,fontWeight:700}}>
+                {parsed.length>0?`✅ זוהו ${parsed.length} עסקאות`:'✏️ עסקאות ידניות'}
+              </p>
+              {ocrErr&&<p style={{fontSize:12,color:'#F59E0B',margin:'4px 0 0'}}>{ocrErr}</p>}
+            </div>
+          </div>
+
+          {/* Auto-parsed results */}
+          {parsed.length>0&&(
+            <div className="card" style={{overflow:'hidden',marginBottom:14}}>
+              {parsed.map(tx=><TxRow key={tx.id} tx={tx}/>)}
+            </div>
+          )}
+
+          {/* Manual entry fallback */}
+          {(parsed.length===0||ocrErr)&&(
+            <div className="card" style={{padding:16,marginBottom:14}}>
+              <p style={{fontSize:13,fontWeight:700,marginBottom:10}}>הזן עסקאות ידנית:</p>
+              {rows.map(r=>(
+                <div key={r.id} style={{display:'grid',gridTemplateColumns:'1fr 80px 90px 32px',gap:6,marginBottom:8}}>
+                  <input className="input" placeholder="תיאור" value={r.description}
+                         onChange={e=>editRow(r.id,'description',e.target.value)}
+                         style={{fontSize:12,padding:'8px 10px'}}/>
+                  <input className="input input-num" type="number" placeholder="סכום" value={r.amount}
+                         onChange={e=>editRow(r.id,'amount',e.target.value)}
+                         style={{fontSize:12,padding:'8px 8px'}}/>
+                  <input className="input" type="date" value={r.date} style={{direction:'ltr',fontSize:11,padding:'8px 6px'}}
+                         onChange={e=>editRow(r.id,'date',e.target.value)}/>
+                  <button onClick={()=>delRow(r.id)}
+                          style={{border:'none',background:'#fee2e2',color:'#dc2626',borderRadius:8,cursor:'pointer',fontSize:14}}>✕</button>
+                </div>
+              ))}
+              <button onClick={addRow} style={{border:'1px dashed #d1d5db',background:'none',borderRadius:10,
+                padding:'8px',width:'100%',fontSize:13,color:'#6B7280',cursor:'pointer',marginTop:4}}>
+                + הוסף שורה
+              </button>
+            </div>
+          )}
+
+          <div style={{display:'flex',gap:10}}>
+            <button className="btn-secondary" onClick={()=>{setStage('upload');setParsed([]);setRows([]);setOcrErr(null);}}
+                    style={{width:'auto',padding:'14px 18px'}}>← חזור</button>
+            <button className="btn-primary" onClick={confirm}>
+              ייבא {parsed.length||rows.filter(r=>r.description).length} עסקאות ✓
+            </button>
+          </div>
+        </div>
+      )}
+
+      {stage==='done'&&(
+        <div className="card" style={{padding:40,textAlign:'center'}}>
+          <div style={{fontSize:56,marginBottom:12}}>🎉</div>
+          <p style={{fontSize:18,fontWeight:800,marginBottom:8}}>הצילום יובא!</p>
+          <button className="btn-primary" onClick={()=>{setStage('upload');setImgUrl(null);setParsed([]);setRows([]);}}>
+            העלה צילום נוסף
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── EXCEL IMPORT ── */
 function ImportTab({onImport}) {
+  const [method,setMethod]=useState('choose'); // choose | excel | screenshot | connect
+  if(method==='screenshot') return (
+    <div style={{padding:16}}>
+      <button onClick={()=>setMethod('choose')} style={{border:'none',background:'none',color:'#22C55E',
+        fontSize:14,fontWeight:700,cursor:'pointer',marginBottom:12,padding:0}}>← חזור</button>
+      <ScreenshotImport onImport={txs=>{onImport(txs);}}/>
+    </div>
+  );
+  if(method==='connect') return (
+    <div style={{padding:16,display:'flex',flexDirection:'column',gap:14}}>
+      <button onClick={()=>setMethod('choose')} style={{border:'none',background:'none',color:'#22C55E',
+        fontSize:14,fontWeight:700,cursor:'pointer',padding:0}}>← חזור</button>
+      <div className="card" style={{padding:20,background:'#fffbeb',border:'1px solid #fde68a'}}>
+        <p style={{fontSize:16,fontWeight:700,color:'#92400e',marginBottom:8}}>🏦 חיבור ישיר לבנק</p>
+        <p style={{fontSize:13,color:'#78350f',lineHeight:1.7,marginBottom:14}}>
+          חיבור ישיר לנתוני בנק דורש רישום אצל <strong>בנק ישראל כספק מידע פיננסי מורשה</strong> —
+          תהליך בירוקרטי שאינו זמין לאפליקציה אישית.<br/><br/>
+          האלטרנטיבות הטובות ביותר:
+        </p>
+        {[
+          {emoji:'📸',title:'צילום מסך + OCR',desc:'העלה תמונה של מסך העסקאות — המערכת תזהה אוטומטית',action:()=>setMethod('screenshot'),btn:'נסה עכשיו',color:'#22C55E'},
+          {emoji:'📊',title:'קובץ Excel / CSV',desc:'כל הבנקים הישראליים מאפשרים ייצוא. מהיר ומדויק 100%',action:()=>setMethod('excel'),btn:'ייבא Excel',color:'#3B82F6'},
+          {emoji:'🔧',title:'israeli-bank-scrapers',desc:'ספריית Node.js קוד-פתוח שגורדת נתוני בנק. דורשת server עצמי.',action:()=>window.open('https://github.com/eshaham/israeli-bank-scrapers','_blank'),btn:'GitHub ↗',color:'#6B7280'},
+        ].map(o=>(
+          <div key={o.title} style={{background:'white',borderRadius:14,padding:14,marginBottom:10,
+               display:'flex',alignItems:'center',gap:12,border:'1px solid #e5e7eb'}}>
+            <span style={{fontSize:28,flexShrink:0}}>{o.emoji}</span>
+            <div style={{flex:1}}>
+              <p style={{margin:0,fontWeight:700,fontSize:14}}>{o.title}</p>
+              <p style={{margin:'3px 0 0',fontSize:12,color:'#6B7280'}}>{o.desc}</p>
+            </div>
+            <button onClick={o.action} style={{border:'none',background:o.color,color:'white',
+              borderRadius:10,padding:'8px 14px',fontSize:13,fontWeight:700,cursor:'pointer',flexShrink:0}}>
+              {o.btn}
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+  if(method==='choose') return (
+    <div style={{padding:16,display:'flex',flexDirection:'column',gap:12}}>
+      <p style={{fontSize:17,fontWeight:800,margin:0}}>ייבוא נתוני בנק / השקעות</p>
+      <p style={{fontSize:13,color:'#6B7280',margin:0}}>בחר שיטה:</p>
+      {[
+        {emoji:'🏦',title:'חיבור / מידע על חיבור ישיר',sub:'הסבר על אפשרויות חיבור',action:()=>setMethod('connect'),color:'#fffbeb',border:'#fde68a',tc:'#92400e'},
+        {emoji:'📸',title:'צילום מסך',sub:'העלה PNG/JPG — OCR מזהה עסקאות',action:()=>setMethod('screenshot'),color:'#f0fdf4',border:'#bbf7d0',tc:'#14532d'},
+        {emoji:'📊',title:'קובץ Excel / CSV',sub:'הפועלים, לאומי, דיסקונט, Max ועוד',action:()=>setMethod('excel'),color:'#eff6ff',border:'#bfdbfe',tc:'#1e40af'},
+      ].map(o=>(
+        <button key={o.title} onClick={o.action} style={{background:o.color,border:`1px solid ${o.border}`,
+          borderRadius:16,padding:'16px',display:'flex',alignItems:'center',gap:14,cursor:'pointer',textAlign:'right'}}>
+          <span style={{fontSize:34,flexShrink:0}}>{o.emoji}</span>
+          <div>
+            <p style={{margin:0,fontWeight:700,fontSize:15,color:o.tc}}>{o.title}</p>
+            <p style={{margin:'3px 0 0',fontSize:12,color:'#6B7280'}}>{o.sub}</p>
+          </div>
+          <span style={{marginRight:'auto',color:o.border,fontSize:20}}>›</span>
+        </button>
+      ))}
+    </div>
+  );
+  // ── Excel flow below (method==='excel') ──
   const [stage,setStage]=useState('upload'); // upload | map | preview | done
   const [rows,setRows]=useState([]);
   const [cols,setCols]=useState({date:-1,desc:-1,debit:-1,credit:-1,amount:-1});
@@ -721,6 +995,8 @@ function ImportTab({onImport}) {
 
   return (
     <div style={{padding:16,display:'flex',flexDirection:'column',gap:16}}>
+      <button onClick={()=>setMethod('choose')} style={{border:'none',background:'none',color:'#22C55E',
+        fontSize:14,fontWeight:700,cursor:'pointer',padding:0,marginBottom:-8}}>← חזור לבחירת שיטה</button>
 
       {stage==='upload'&&(
         <div>
@@ -1221,11 +1497,11 @@ function InvestmentsTab({profile}) {
   const [kVal,setKVal]=useState(stored.kerenValue??0);
   const [pVal,setPVal]=useState(stored.pensionValue??0);
   const [savingsAccounts,setSavingsAccounts]=useState(()=>lsGet('fil_savings',[]));
-  const [moneyMarket,setMoneyMarket]=useState(()=>lsGet('fil_mm',{value:0,yield:4.5,name:''}));
+  const [mmFunds,setMmFunds]=useState(()=>lsGet('fil_mm_list',[]));
   const [savEdit,setSavEdit]=useState(false);
   const [savForm,setSavForm]=useState({name:'',bank:'',value:'',rate:''});
   const [mmEdit,setMmEdit]=useState(false);
-  const [mmTmp,setMmTmp]=useState({value:'',yield:'',name:''});
+  const [mmForm,setMmForm]=useState({name:'',value:'',yield:''});
 
   function addSavings(){
     const v=parseFloat(savForm.value);
@@ -1236,10 +1512,14 @@ function InvestmentsTab({profile}) {
     setSavForm({name:'',bank:'',value:'',rate:''}); setSavEdit(false);
   }
   function delSavings(id){const list=savingsAccounts.filter(s=>s.id!==id);setSavingsAccounts(list);lsSet('fil_savings',list);}
-  function saveMM(){
-    const v={value:parseFloat(mmTmp.value)||0,yield:parseFloat(mmTmp.yield)||0,name:mmTmp.name};
-    setMoneyMarket(v); lsSet('fil_mm',v); setMmEdit(false);
+  function addMM(){
+    const v=parseFloat(mmForm.value);
+    if(!mmForm.name||isNaN(v)||v<=0) return;
+    const list=[...mmFunds,{id:Date.now(),name:mmForm.name,value:v,yield:parseFloat(mmForm.yield)||0}];
+    setMmFunds(list); lsSet('fil_mm_list',list);
+    setMmForm({name:'',value:'',yield:''}); setMmEdit(false);
   }
+  function delMM(id){const list=mmFunds.filter(f=>f.id!==id);setMmFunds(list);lsSet('fil_mm_list',list);}
 
   const INV_TABS=[
     {id:'keren',    label:'קה"ש', emoji:'📈'},
@@ -1354,57 +1634,73 @@ function InvestmentsTab({profile}) {
 
         {invTab==='mm'&&(
           <div style={{display:'flex',flexDirection:'column',gap:12}}>
-            <div className="card" style={{overflow:'hidden'}}>
-              <div style={{background:'linear-gradient(135deg,#064e3b,#065f46)',padding:'16px 20px',
-                           display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                <div style={{color:'white'}}>
-                  <p style={{margin:0,fontSize:16,fontWeight:700}}>💵 קרן כספית</p>
-                  <p style={{margin:'4px 0 0',fontSize:12,opacity:.7}}>{moneyMarket.name||'לא הוגדר שם'}</p>
-                </div>
-                <div style={{textAlign:'left',color:'white'}}>
-                  <p style={{margin:0,fontSize:22,fontWeight:800}}>{moneyMarket.value>0?fmtILS(moneyMarket.value):'—'}</p>
-                  {moneyMarket.yield>0&&<p style={{margin:'2px 0 0',fontSize:11,opacity:.7}}>תשואה: {moneyMarket.yield}%</p>}
-                </div>
+            {/* Header + add button */}
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <div>
+                <p style={{margin:0,fontWeight:700,fontSize:15}}>קרנות כספיות</p>
+                {mmFunds.length>0&&<p style={{margin:'2px 0 0',fontSize:12,color:'#15803d'}}>
+                  סה"כ: {fmtILS(mmFunds.reduce((s,f)=>s+f.value,0))}
+                  {' · '}הכנסה שנתית: {fmtILS(mmFunds.reduce((s,f)=>s+f.value*f.yield/100,0))}
+                </p>}
               </div>
-              <div style={{padding:14}}>
-                {mmEdit?(
-                  <div style={{display:'flex',flexDirection:'column',gap:10}}>
-                    <input className="input" placeholder='שם הקרן (לדוגמה: "מגדל ש.כ.")' value={mmTmp.name}
-                           onChange={e=>setMmTmp(f=>({...f,name:e.target.value}))}/>
-                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-                      <input className="input input-num" type="number" placeholder="שווי ₪" value={mmTmp.value}
-                             onChange={e=>setMmTmp(f=>({...f,value:e.target.value}))}/>
-                      <input className="input input-num" type="number" step="0.1" placeholder="תשואה שנתית %" value={mmTmp.yield}
-                             onChange={e=>setMmTmp(f=>({...f,yield:e.target.value}))}/>
-                    </div>
-                    <div style={{display:'flex',gap:10}}>
-                      <button className="btn-primary" onClick={saveMM}>שמור ✓</button>
-                      <button className="btn-secondary" onClick={()=>setMmEdit(false)} style={{width:'auto',padding:'13px 14px'}}>ביטול</button>
-                    </div>
-                  </div>
-                ):(
-                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                    <div>
-                      {moneyMarket.value>0&&moneyMarket.yield>0&&(
-                        <p style={{fontSize:12,color:'#15803d',margin:0}}>
-                          📈 הכנסה שנתית משוערת: {fmtILS(moneyMarket.value*moneyMarket.yield/100)}
-                        </p>
-                      )}
-                      <p style={{fontSize:11,color:'#9CA3AF',margin:'4px 0 0'}}>עדכן מהמסמכי הקרן שלך</p>
-                    </div>
-                    <button onClick={()=>{setMmTmp({value:moneyMarket.value||'',yield:moneyMarket.yield||'',name:moneyMarket.name||''});setMmEdit(true);}}
-                            style={{border:'none',background:'#ecfdf5',color:'#064e3b',borderRadius:8,padding:'7px 14px',fontSize:13,fontWeight:700,cursor:'pointer'}}>
-                      ✏️ עדכן
-                    </button>
-                  </div>
-                )}
-              </div>
+              <button onClick={()=>setMmEdit(v=>!v)} style={{border:'none',background:'#f0fdf4',color:'#15803d',
+                borderRadius:10,padding:'7px 14px',fontSize:13,fontWeight:700,cursor:'pointer'}}>
+                {mmEdit?'ביטול':'+ הוסף קרן'}
+              </button>
             </div>
+
+            {/* Add fund form */}
+            {mmEdit&&(
+              <div className="card" style={{padding:16,display:'flex',flexDirection:'column',gap:10}}>
+                <input className="input" placeholder='שם הקרן (מגדל ש.כ. / הראל קלי / אלטשולר...)' value={mmForm.name}
+                       onChange={e=>setMmForm(f=>({...f,name:e.target.value}))} autoFocus/>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                  <div>
+                    <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>שווי נוכחי ₪</label>
+                    <input className="input input-num" type="number" placeholder="0" value={mmForm.value}
+                           onChange={e=>setMmForm(f=>({...f,value:e.target.value}))}/>
+                  </div>
+                  <div>
+                    <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>תשואה שנתית %</label>
+                    <input className="input input-num" type="number" step="0.1" placeholder="4.5" value={mmForm.yield}
+                           onChange={e=>setMmForm(f=>({...f,yield:e.target.value}))}/>
+                  </div>
+                </div>
+                <button className="btn-primary" onClick={addMM}>הוסף קרן ✓</button>
+              </div>
+            )}
+
+            {/* Fund list */}
+            {mmFunds.length===0&&!mmEdit&&(
+              <div className="card" style={{padding:32,textAlign:'center',color:'#9CA3AF',fontSize:14}}>
+                אין קרנות כספיות — לחץ "הוסף קרן"
+              </div>
+            )}
+            {mmFunds.map(f=>(
+              <div key={f.id} className="card" style={{overflow:'hidden'}}>
+                <div style={{background:'linear-gradient(135deg,#064e3b,#065f46)',padding:'14px 16px',
+                             display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                  <div style={{color:'white'}}>
+                    <p style={{margin:0,fontWeight:700,fontSize:15}}>💵 {f.name}</p>
+                    {f.yield>0&&<p style={{margin:'3px 0 0',fontSize:11,opacity:.7}}>תשואה: {f.yield}% שנתי</p>}
+                  </div>
+                  <div style={{textAlign:'left',color:'white'}}>
+                    <p style={{margin:0,fontSize:20,fontWeight:800}}>{fmtILS(f.value)}</p>
+                    {f.yield>0&&<p style={{margin:'2px 0 0',fontSize:11,opacity:.7}}>+{fmtILS(f.value*f.yield/100)}/שנה</p>}
+                  </div>
+                </div>
+                <div style={{padding:'10px 14px',display:'flex',justifyContent:'flex-start'}}>
+                  <button onClick={()=>delMM(f.id)} style={{border:'none',background:'#fee2e2',color:'#dc2626',
+                    borderRadius:8,padding:'6px 12px',fontSize:13,cursor:'pointer'}}>🗑️ הסר</button>
+                </div>
+              </div>
+            ))}
+
             <div className="card" style={{padding:14,background:'#f0fdf4',border:'1px solid #a7f3d0'}}>
               <p style={{fontSize:12,color:'#065f46',margin:'0 0 6px',fontWeight:700}}>💡 מה זה קרן כספית?</p>
               <p style={{fontSize:12,color:'#047857',margin:0,lineHeight:1.6}}>
-                קרן כספית (Money Market Fund) היא אפיק השקעה סולידי בישראל עם נזילות יומית.
-                תשואה ממוצעת: 4-5% שנתי. ניתן לפתוח דרך בתי ההשקעות (מגדל, הראל, אלטשולר שחם וכד׳).
+                קרן כספית היא אפיק השקעה סולידי עם נזילות יומית. תשואה ממוצעת 4-5% שנתי.
+                מגדל שקלים, הראל קלי, אלטשולר שחם כספית — ניתן לפתוח דרך בית ההשקעות.
               </p>
             </div>
           </div>
@@ -1417,8 +1713,73 @@ function InvestmentsTab({profile}) {
   );
 }
 
+/* ── BUDGET EDITOR ── */
+function BudgetEditor({onSave}) {
+  const [plan,setPlan]=useState(()=>loadBudgetPlan());
+  const [saved,setSaved]=useState(false);
+  const total=plan.reduce((s,b)=>s+b.pct,0);
+  const over=total!==100;
+
+  function setPct(key,val){
+    const v=Math.max(0,Math.min(100,parseInt(val)||0));
+    setPlan(p=>p.map(b=>b.key===key?{...b,pct:v}:b));
+  }
+  function save(){
+    lsSet(LS.BUDGET,plan);
+    onSave&&onSave(plan);
+    setSaved(true);
+    setTimeout(()=>setSaved(false),2000);
+  }
+  function reset(){setPlan(DEFAULT_BUDGET_PLAN);lsSet(LS.BUDGET,DEFAULT_BUDGET_PLAN);}
+
+  return (
+    <div className="card" style={{padding:18}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+        <p style={{margin:0,fontSize:15,fontWeight:700}}>🎯 הגדרת תקציב לפי אחוזים</p>
+        <button onClick={reset} style={{border:'none',background:'#f3f4f6',color:'#6B7280',borderRadius:8,
+          padding:'5px 10px',fontSize:12,cursor:'pointer'}}>איפוס</button>
+      </div>
+
+      {/* Total indicator */}
+      <div style={{background:over?'#fef2f2':'#f0fdf4',borderRadius:10,padding:'8px 12px',
+                   marginBottom:14,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <span style={{fontSize:13,color:over?'#dc2626':'#15803d',fontWeight:700}}>
+          {over?`⚠️ סה"כ ${total}% — חייב להיות 100%`:`✅ סה"כ: ${total}%`}
+        </span>
+        <span style={{fontSize:12,color:'#9CA3AF'}}>{over?`${100-total>0?'+':''}${100-total}%`:''}</span>
+      </div>
+
+      {plan.map(b=>(
+        <div key={b.key} style={{marginBottom:14}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+            <label style={{fontSize:13,fontWeight:600,color:'#374151'}}>{b.emoji} {b.key}</label>
+            <div style={{display:'flex',alignItems:'center',gap:6}}>
+              <input type="range" min="0" max="60" value={b.pct} onChange={e=>setPct(b.key,e.target.value)}
+                     style={{width:100,accentColor:b.color}}/>
+              <div style={{display:'flex',alignItems:'center',background:'#f3f4f6',borderRadius:8,overflow:'hidden',width:60}}>
+                <input type="number" min="0" max="100" value={b.pct}
+                       onChange={e=>setPct(b.key,e.target.value)}
+                       style={{width:'100%',border:'none',background:'transparent',textAlign:'center',
+                               fontSize:13,fontWeight:700,padding:'5px 4px',direction:'ltr'}}/>
+                <span style={{fontSize:12,paddingLeft:4,color:'#6B7280'}}>%</span>
+              </div>
+            </div>
+          </div>
+          <div style={{height:5,background:'#f3f4f6',borderRadius:3}}>
+            <div style={{height:'100%',width:`${(b.pct/60)*100}%`,background:b.color,borderRadius:3,transition:'width .2s'}}/>
+          </div>
+        </div>
+      ))}
+
+      <button className="btn-primary" onClick={save} disabled={over} style={{opacity:over?.5:1,marginTop:4}}>
+        {saved?'✓ נשמר!':'שמור תקציב'}
+      </button>
+    </div>
+  );
+}
+
 /* ── SETTINGS TAB ── */
-function SettingsTab({profile,onReset,onProfileUpdate}) {
+function SettingsTab({profile,onReset,onProfileUpdate,onBudgetChange}) {
   const [p,setP]=useState({...profile});
   const [saved,setSaved]=useState(false);
   const set=(k,v)=>setP(prev=>({...prev,[k]:v}));
@@ -1450,6 +1811,9 @@ function SettingsTab({profile,onReset,onProfileUpdate}) {
           {saved?'✓ נשמר!':'שמור שינויים'}
         </button>
       </div>
+
+      {/* Budget editor */}
+      <BudgetEditor onSave={onBudgetChange}/>
 
       <div className="card" style={{padding:20,borderColor:'#fee2e2'}}>
         <p style={{fontSize:15,fontWeight:700,color:'#dc2626',marginBottom:8}}>⚠️ איפוס נתונים</p>
@@ -1493,6 +1857,7 @@ function BottomNav({tab,setTab}) {
 
 /* ── APP ROOT ── */
 function App() {
+  const [budgetPlan,setBudgetPlan] = useState(()=>loadBudgetPlan());
   const [done,setDone]       = useState(()=>lsGet(LS.DONE,false));
   const [profile,setProfile] = useState(()=>lsGet(LS.PROFILE,null));
   const [txs,setTxs]         = useState(()=>lsGet(LS.TX,[]));
@@ -1525,11 +1890,13 @@ function App() {
       </div>
 
       <div className="main-content">
-        {tab==='dashboard'   && <Dashboard     profile={profile} txs={txs} onAdd={handleAdd}/>}
+        {tab==='dashboard'   && <Dashboard     profile={profile} txs={txs} onAdd={handleAdd} budgetPlan={budgetPlan}/>}
         {tab==='transactions'&& <TransactionsTab txs={txs} onAdd={handleAdd}/>}
         {tab==='import'      && <ImportTab      onImport={handleImport}/>}
         {tab==='investments' && <InvestmentsTab profile={profile}/>}
-        {tab==='settings'    && <SettingsTab    profile={profile} onReset={handleReset} onProfileUpdate={p=>{setProfile(p);lsSet(LS.PROFILE,p);}}/>}
+        {tab==='settings'    && <SettingsTab    profile={profile} onReset={handleReset}
+          onProfileUpdate={p=>{setProfile(p);lsSet(LS.PROFILE,p);}}
+          onBudgetChange={plan=>setBudgetPlan(plan)}/>}
       </div>
 
       <BottomNav tab={tab} setTab={setTab}/>
