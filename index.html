@@ -1,1203 +1,1070 @@
 <!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>FinanceIL | ניהול כספים אישי</title>
-  <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
+  <title>FinanceIL</title>
+  <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
   <script src="https://unpkg.com/react@18.2.0/umd/react.development.js"></script>
   <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script>tailwind.config = { theme:{ extend:{ fontFamily:{ sans:['Heebo','sans-serif'] } } } };</script>
+  <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script>tailwind.config={theme:{extend:{fontFamily:{sans:['Heebo','sans-serif']}}}};</script>
   <style>
-    *{font-family:'Heebo','Segoe UI',sans-serif;box-sizing:border-box;}
-    body{background:#f0f4f8;margin:0;}
-    @keyframes slideUp{from{transform:translateY(40px);opacity:0}to{transform:translateY(0);opacity:1}}
-    @keyframes fadeIn{from{background:#dcfce7}to{background:transparent}}
+    *{font-family:'Heebo','Segoe UI',sans-serif;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+    body{background:#f0f4f8;margin:0;overscroll-behavior:none;}
+    @keyframes slideUp{from{transform:translateY(30px);opacity:0}to{transform:translateY(0);opacity:1}}
+    @keyframes fadeIn{from{opacity:0}to{opacity:1}}
     @keyframes spin{to{transform:rotate(360deg)}}
-    .modal-enter{animation:slideUp .28s ease}
-    .tx-new{animation:fadeIn 2.5s ease forwards}
-    .card-lift{transition:transform .18s,box-shadow .18s}
-    .card-lift:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.09)}
+    .slide-up{animation:slideUp .3s ease}
+    .fade-in{animation:fadeIn .25s ease}
+    .spin{animation:spin .8s linear infinite;display:inline-block}
+    .card{background:#fff;border-radius:20px;border:1px solid #e5e7eb;}
+    .btn-primary{background:#22C55E;color:#fff;border:none;border-radius:14px;padding:14px 24px;
+                 font-size:16px;font-weight:700;cursor:pointer;width:100%;transition:background .15s;}
+    .btn-primary:active{background:#16a34a;}
+    .btn-secondary{background:#f3f4f6;color:#374151;border:none;border-radius:14px;padding:14px 24px;
+                   font-size:15px;font-weight:600;cursor:pointer;transition:background .15s;}
+    .btn-secondary:active{background:#e5e7eb;}
+    .input{width:100%;border:1.5px solid #e5e7eb;border-radius:12px;padding:13px 16px;
+           font-size:16px;outline:none;transition:border-color .15s;background:#fff;}
+    .input:focus{border-color:#22C55E;}
+    .input-num{direction:ltr;text-align:right;}
+    .tag-g{background:#dcfce7;color:#16a34a;border-radius:8px;padding:2px 8px;font-size:11px;font-weight:700}
+    .tag-r{background:#fee2e2;color:#dc2626;border-radius:8px;padding:2px 8px;font-size:11px;font-weight:700}
     .scrollbar-hide::-webkit-scrollbar{display:none}
     .scrollbar-hide{-ms-overflow-style:none;scrollbar-width:none}
-    input[type="number"]{direction:ltr;text-align:right}
-    .spin{animation:spin .8s linear infinite}
-    .positive{color:#16a34a}
-    .negative{color:#dc2626}
-    .tag-green{background:#dcfce7;color:#16a34a;border-radius:6px;padding:2px 7px;font-size:11px;font-weight:700}
-    .tag-red{background:#fee2e2;color:#dc2626;border-radius:6px;padding:2px 7px;font-size:11px;font-weight:700}
+    /* bottom nav safe area */
+    .main-content{padding-bottom:calc(72px + env(safe-area-inset-bottom));}
+    .bottom-nav{padding-bottom:env(safe-area-inset-bottom);}
   </style>
 </head>
 <body>
-  <div id="loading" style="display:flex;align-items:center;justify-content:center;height:100vh;font-size:1.1rem;color:#6b7280;font-family:Heebo,sans-serif;">⏳ טוען...</div>
-  <div id="root"></div>
+<div id="root" style="min-height:100vh"></div>
 
 <script type="text/babel">
-const { useState, useEffect, useMemo, useCallback } = React;
+const { useState, useEffect, useMemo, useCallback, useRef } = React;
 
-/* ═══════════════════════════════════════════════════
-   CATEGORISATION ENGINE
-═══════════════════════════════════════════════════ */
-const CATEGORY_RULES = [
-  { keywords:['שופרסל','rami levy','רמי לוי','ויקטורי','יינות ביתן','מגה','אושר עד'],
-    category:'סופרמרקט',      color:'#22C55E', emoji:'🛒' },
-  { keywords:['וולט','wolt','מקדונלד','mcdonald','בורגר קינג','קפה','cafe','coffee','מסעדה','פיצה','pizza','סושי','חומוס'],
-    category:'מסעדות וקפה',   color:'#F97316', emoji:'🍽️' },
-  { keywords:['ארנונה','עיריית','municipality'],
-    category:'ארנונה',         color:'#8B5CF6', emoji:'🏛️' },
-  { keywords:['hot','הוט','yes','יס','netflix','נטפליקס','spotify','ספוטיפיי','apple tv','disney'],
-    category:'בידור ומנויים', color:'#EC4899', emoji:'🎬' },
-  { keywords:['partner','פרטנר','cellcom','סלקום','pelephone','פלאפון','bezeq','בזק','גולן טלקום'],
-    category:'תקשורת',         color:'#06B6D4', emoji:'📱' },
-  { keywords:['paz','פז','sonol','סונול','delek','דלק תחנה','fuel'],
-    category:'דלק ורכב',       color:'#84CC16', emoji:'⛽' },
-  { keywords:['egged','אגד','דן','רב-קו','rav-kav','רכבת','גט','יאנגו','taxi','parking','חניה'],
-    category:'תחבורה',         color:'#3B82F6', emoji:'🚌' },
-  { keywords:['חברת החשמל','iec','מים','ועד בית'],
-    category:'חשבונות בית',   color:'#EAB308', emoji:'💡' },
-  { keywords:['ביטוח','harel','הראל','מנורה','כלל','מגדל','איילון'],
-    category:'ביטוח',          color:'#6366F1', emoji:'🛡️' },
-  { keywords:['מכבי','כללית','לאומית','super pharm','סופר-פארם','תרופות'],
-    category:'בריאות',         color:'#14B8A6', emoji:'🏥' },
-  { keywords:['amazon','אמזון','aliexpress','ebay','זארה','zara','h&m','קסטרו','קניון'],
-    category:'קניות',          color:'#F59E0B', emoji:'🛍️' },
-  { keywords:['משכורת','שכר','הכנסה','income','salary','bonus','בונוס'],
-    category:'הכנסה',          color:'#10B981', emoji:'💰' },
-  { keywords:['שכר דירה','שכירות','mortgage','משכנתה'],
-    category:'דיור',           color:'#64748B', emoji:'🏠' },
+/* ── LS ── */
+const LS = {
+  DONE:'fil_done', PROFILE:'fil_profile', TX:'fil_tx',
+  RECURRING:'fil_rec', INV:'fil_inv', FINNHUB:'fil_fh',
+};
+const lsGet = (k,fb) => { try{ const v=localStorage.getItem(k); return v!==null?JSON.parse(v):fb; }catch{ return fb; } };
+const lsSet = (k,v) => { try{ localStorage.setItem(k,JSON.stringify(v)); }catch{} };
+const lsClear = () => Object.values(LS).forEach(k=>localStorage.removeItem(k));
+
+/* ── CATEGORIES ── */
+const CAT_RULES = [
+  {kw:['שופרסל','רמי לוי','ויקטורי','מגה','יינות ביתן','אושר עד','rami levy','mega'],     cat:'סופרמרקט',      color:'#22C55E',emoji:'🛒'},
+  {kw:['וולט','wolt','מקדונלד','mcdonald','קפה','cafe','coffee','מסעדה','פיצה','pizza','סושי','בורגר'],  cat:'מסעדות וקפה',  color:'#F97316',emoji:'🍽️'},
+  {kw:['ארנונה','עיריית','municipality'],                                                  cat:'ארנונה',         color:'#8B5CF6',emoji:'🏛️'},
+  {kw:['hot','הוט','netflix','נטפליקס','spotify','ספוטיפיי','yes','יס','disney','apple tv'], cat:'בידור',         color:'#EC4899',emoji:'🎬'},
+  {kw:['partner','פרטנר','cellcom','סלקום','פלאפון','pelephone','bezeq','בזק'],            cat:'תקשורת',         color:'#06B6D4',emoji:'📱'},
+  {kw:['paz','פז','sonol','סונול','דלק','fuel'],                                           cat:'דלק ורכב',       color:'#84CC16',emoji:'⛽'},
+  {kw:['אגד','דן','רב-קו','rav-kav','רכבת','גט','taxi','חניה','parking'],                  cat:'תחבורה',         color:'#3B82F6',emoji:'🚌'},
+  {kw:['חברת החשמל','iec','מים','ועד בית'],                                               cat:'חשבונות בית',    color:'#EAB308',emoji:'💡'},
+  {kw:['ביטוח','הראל','מנורה','כלל','מגדל','איילון'],                                     cat:'ביטוח',          color:'#6366F1',emoji:'🛡️'},
+  {kw:['מכבי','כללית','לאומית','סופר-פארם','super pharm','תרופות'],                        cat:'בריאות',         color:'#14B8A6',emoji:'🏥'},
+  {kw:['amazon','אמזון','aliexpress','ebay','זארה','zara','h&m','קסטרו','קניון'],          cat:'קניות',          color:'#F59E0B',emoji:'🛍️'},
+  {kw:['משכורת','שכר','הכנסה','income','salary','bonus','בונוס'],                         cat:'הכנסה',          color:'#10B981',emoji:'💰'},
+  {kw:['שכר דירה','שכירות','mortgage','משכנתה'],                                          cat:'דיור',           color:'#64748B',emoji:'🏠'},
 ];
-const DEFAULT_CAT = { category:'אחר', color:'#9CA3AF', emoji:'📦' };
+const DEF_CAT = {cat:'אחר',color:'#9CA3AF',emoji:'📦'};
 
-function categorizeTransaction(desc) {
-  if (!desc || typeof desc !== 'string') return { ...DEFAULT_CAT };
+function categorize(desc) {
+  if (!desc||typeof desc!=='string') return {...DEF_CAT};
   const low = desc.toLowerCase().trim();
-  if (!low) return { ...DEFAULT_CAT };
-  for (const rule of CATEGORY_RULES) {
-    for (const kw of rule.keywords) {
+  for (const r of CAT_RULES)
+    for (const kw of r.kw)
       if (low.includes(kw.toLowerCase()))
-        return { category:rule.category, color:rule.color, emoji:rule.emoji };
-    }
-  }
-  return { ...DEFAULT_CAT };
+        return {cat:r.cat,color:r.color,emoji:r.emoji};
+  return {...DEF_CAT};
 }
 
-/* ═══════════════════════════════════════════════════
-   CASH FLOW ENGINE
-═══════════════════════════════════════════════════ */
-function calculateCashFlow(accounts, transactions, recurring, income, refDate) {
-  const now = refDate instanceof Date ? refDate : new Date();
-  const day = now.getDate();
-  const dim = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
-  const sum = (arr, fn) => Math.round(arr.reduce((s,x) => s+fn(x), 0)*100)/100;
-  const totalBalance  = sum(accounts, a => a.balance);
-  const liquidBalance = sum(accounts.filter(a => a.type !== 'חיסכון'), a => a.balance);
-  const upcomingExp   = sum(recurring.filter(e => e.dueDay > day), e => e.amount);
-  const upcomingInc   = sum(income.filter(i => i.dueDay > day), i => i.amount);
-  const safeToSpend   = Math.max(0, Math.round((liquidBalance - upcomingExp + upcomingInc)*100)/100);
-  const thisMonth = transactions.filter(t => {
-    const d = new Date(t.date);
-    return d.getMonth()===now.getMonth() && d.getFullYear()===now.getFullYear();
-  });
-  const monthlyIncome   = sum(thisMonth.filter(t => t.amount>0),  t =>  t.amount);
-  const monthlyExpenses = sum(thisMonth.filter(t => t.amount<0),  t => -t.amount);
-  return { totalBalance, liquidBalance, safeToSpend, upcomingExp, upcomingInc,
-           monthlyIncome, monthlyExpenses, daysRemaining: dim - day };
+/* ── BUDGET CALC ── */
+const BUDGET_PLAN = [
+  {key:'דיור',       pct:30, color:'#64748B', emoji:'🏠'},
+  {key:'מזון ושוק',  pct:15, color:'#22C55E', emoji:'🛒'},
+  {key:'תחבורה',     pct:10, color:'#3B82F6', emoji:'🚌'},
+  {key:'חשבונות',    pct:8,  color:'#EAB308', emoji:'💡'},
+  {key:'בריאות',     pct:5,  color:'#14B8A6', emoji:'🏥'},
+  {key:'בידור',      pct:7,  color:'#EC4899', emoji:'🎬'},
+  {key:'חיסכון',     pct:15, color:'#F59E0B', emoji:'💰'},
+  {key:'שונות',      pct:10, color:'#9CA3AF', emoji:'📦'},
+];
+const CAT_TO_BUDGET = {
+  'סופרמרקט':'מזון ושוק','מסעדות וקפה':'בידור','ארנונה':'חשבונות',
+  'בידור':'בידור','תקשורת':'חשבונות','דלק ורכב':'תחבורה','תחבורה':'תחבורה',
+  'חשבונות בית':'חשבונות','ביטוח':'חשבונות','בריאות':'בריאות','קניות':'שונות',
+  'דיור':'דיור','אחר':'שונות',
+};
+function calcBudget(netSalary) {
+  return BUDGET_PLAN.map(b => ({...b, amount: Math.round(netSalary * b.pct / 100)}));
 }
-
-function expensesByCategory(transactions) {
+function spentPerBudget(txs, budget) {
   const map = {};
-  transactions.filter(t => t.amount < 0).forEach(t => {
-    if (!map[t.category]) map[t.category] = { name:t.category, value:0, color:t.color, emoji:t.emoji };
-    map[t.category].value = Math.round((map[t.category].value + Math.abs(t.amount))*100)/100;
+  budget.forEach(b => { map[b.key] = 0; });
+  const now = new Date();
+  txs.filter(t => t.amount < 0).forEach(t => {
+    const d = new Date(t.date);
+    if (d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()) {
+      const bk = CAT_TO_BUDGET[t.cat] || 'שונות';
+      if (map[bk] !== undefined) map[bk] += Math.abs(t.amount);
+    }
   });
-  return Object.values(map).sort((a,b) => b.value - a.value);
+  return map;
 }
 
-/* ═══════════════════════════════════════════════════
-   FORMATTERS
-═══════════════════════════════════════════════════ */
-function fmtILS(n) {
-  if (typeof n !== 'number' || isNaN(n)) return '₪0';
+/* ── FORMATTERS ── */
+const fmtILS = n => {
+  if (typeof n!=='number'||isNaN(n)) return '₪0';
   return new Intl.NumberFormat('he-IL',{style:'currency',currency:'ILS',minimumFractionDigits:0,maximumFractionDigits:0}).format(Math.round(n));
-}
-function fmtUSD(n) {
-  return '$' + new Intl.NumberFormat('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}).format(n);
-}
-function fmtPct(n, sign=true) {
-  const s = (n >= 0 && sign ? '+' : '') + n.toFixed(2) + '%';
-  return s;
-}
-function fmtDate(s) {
-  const d = new Date(s);
-  return isNaN(d) ? s : new Intl.DateTimeFormat('he-IL',{day:'numeric',month:'long'}).format(d);
-}
-
-/* ═══════════════════════════════════════════════════
-   MOCK BANK DATA
-═══════════════════════════════════════════════════ */
-const ACCOUNTS = [
-  { id:1, bank:'בנק הפועלים', type:'עובר ושב',    balance: 12450, num:'****3421', color:'#E63329', logo:'🏦' },
-  { id:2, bank:'בנק לאומי',   type:'חיסכון',       balance: 35000, num:'****8876', color:'#0062A3', logo:'🏦' },
-  { id:3, bank:'Max',          type:'כרטיס אשראי', balance: -3200, num:'****5544', color:'#FF6B35', logo:'💳' },
-];
-const RECURRING = [
-  { id:1, name:'שכר דירה',   amount:5500, dueDay:1,  emoji:'🏠' },
-  { id:2, name:'ארנונה',      amount:1200, dueDay:10, emoji:'🏛️' },
-  { id:3, name:'חברת החשמל', amount: 350, dueDay:15, emoji:'💡' },
-  { id:4, name:'HOT',         amount: 189, dueDay:20, emoji:'📺' },
-  { id:5, name:'פרטנר',       amount: 149, dueDay:22, emoji:'📱' },
-  { id:6, name:'ביטוח רכב',  amount: 450, dueDay:5,  emoji:'🛡️' },
-];
-const INCOME_SOURCES = [{ id:1, name:'משכורת', amount:18000, dueDay:7, emoji:'💰' }];
-
-function ago(n) {
-  const d = new Date(); d.setDate(d.getDate()-n);
-  return d.toISOString().split('T')[0];
-}
-const INIT_TX = [
-  { id:1,  description:'משכורת - חברת הייטק בע"מ',  amount:18000,  date:ago(3),  account:'בנק הפועלים' },
-  { id:2,  description:'שופרסל דיל - סניף הרצל',     amount:-285.5, date:ago(1),  account:'Max' },
-  { id:3,  description:'וולט - הזמנה',                amount:-67,    date:ago(1),  account:'Max' },
-  { id:4,  description:'עיריית תל אביב - ארנונה',     amount:-1200,  date:ago(2),  account:'בנק הפועלים' },
-  { id:5,  description:'HOT - מנוי חודשי',            amount:-189,   date:ago(5),  account:'Max' },
-  { id:6,  description:'קפה ג׳ו - רוטשילד',          amount:-45,    date:ago(0),  account:'Max' },
-  { id:7,  description:'תחנת דלק פז',                 amount:-220,   date:ago(4),  account:'Max' },
-  { id:8,  description:'ביטוח רכב - הראל',           amount:-890,   date:ago(6),  account:'בנק הפועלים' },
-  { id:9,  description:'רמי לוי - פתח תקווה',         amount:-312,   date:ago(7),  account:'Max' },
-  { id:10, description:'Netflix',                      amount:-58,    date:ago(8),  account:'Max' },
-  { id:11, description:'פרטנר - חשבון חודשי',         amount:-149,   date:ago(9),  account:'Max' },
-  { id:12, description:'רב-קו - טעינה',               amount:-100,   date:ago(3),  account:'בנק הפועלים' },
-  { id:13, description:'שכר דירה - ינואר',            amount:-5500,  date:ago(10), account:'בנק הפועלים' },
-  { id:14, description:'חברת החשמל',                  amount:-350,   date:ago(11), account:'בנק הפועלים' },
-  { id:15, description:'מכבי שירותי בריאות',          amount:-120,   date:ago(12), account:'Max' },
-  { id:16, description:'Amazon - הזמנה',              amount:-179,   date:ago(6),  account:'Max' },
-  { id:17, description:'Spotify Premium',              amount:-23,    date:ago(13), account:'Max' },
-  { id:18, description:'גט - הזמנת מונית',            amount:-38,    date:ago(2),  account:'Max' },
-].map(t => ({ ...t, ...categorizeTransaction(t.description) }));
-
-/* ═══════════════════════════════════════════════════
-   INVESTMENT MOCK DATA
-═══════════════════════════════════════════════════ */
-const KEREN = {
-  provider:         'אלטשולר שחם',
-  track:            'מסלול מניות עד גיל 50',
-  logo:             '📈',
-  currentValue:     87450,
-  totalContributed: 64800,
-  monthlyEmployee:  450,    // 2.5% of 18,000
-  monthlyEmployer:  1350,   // 7.5% of 18,000
-  startDate:        new Date('2021-03-01'),
-  maturityDate:     new Date('2027-03-01'),
-  ytdReturn:        8.3,
-  avgAnnualReturn:  7.2,
+};
+const fmtDate = s => {
+  const d=new Date(s); if(isNaN(d)) return s;
+  return new Intl.DateTimeFormat('he-IL',{day:'numeric',month:'short'}).format(d);
 };
 
-const PENSION = {
-  provider:          'מנורה מבטחים',
-  track:             'מסלול גיל 50-60',
-  logo:              '🏛️',
-  currentValue:      124500,
-  totalContributed:  95000,
-  monthlyEmployee:   1080,   // 6% of 18,000
-  monthlyEmployer:   2970,   // ~16.5% of 18,000 (incl. pidzuyim)
-  ytdReturn:         6.8,
-  avgAnnualReturn:   6.1,
-  currentAge:        32,
-  retirementAge:     67,
-  projectedValue:    2850000,
-};
-
-// Portfolio in USD; exchange rate mock
-const USD_ILS = 3.72;
-
-const PORTFOLIO_DEF = [
-  { symbol:'NVDA', name:'NVIDIA Corporation',  shares:10,  avgCost:650.00,  color:'#76B900' },
-  { symbol:'AAPL', name:'Apple Inc.',           shares:20,  avgCost:175.00,  color:'#555555' },
-  { symbol:'CHKP', name:'Check Point Software', shares:15,  avgCost:145.00,  color:'#CC0000' },
-  { symbol:'TEVA', name:'טבע תעשיות',          shares:150, avgCost:8.80,    color:'#003087' },
-  { symbol:'ICL',  name:'ICL Group',            shares:300, avgCost:7.50,    color:'#E8871E' },
-  { symbol:'NICE', name:'NICE Systems',         shares:8,   avgCost:195.00,  color:'#7B2D8B' },
-  { symbol:'SPY',  name:'S&P 500 ETF',          shares:5,   avgCost:440.00,  color:'#2563EB' },
-  { symbol:'QQQ',  name:'Nasdaq-100 ETF',       shares:5,   avgCost:370.00,  color:'#9333EA' },
-];
-
-const INIT_PRICES = {
-  NVDA:875.00, AAPL:189.00, CHKP:168.50, TEVA:13.20,
-  ICL:6.80,    NICE:210.00, SPY:487.00,  QQQ:428.00,
-};
-
-/* ═══════════════════════════════════════════════════
-   SVG DONUT CHART
-═══════════════════════════════════════════════════ */
-function DonutChart({ data, centerLabel, centerValue }) {
-  const [hov, setHov] = useState(null);
-  const [tip, setTip] = useState(null);
-  if (!data || data.length === 0)
-    return <div className="h-48 flex items-center justify-center text-gray-400 text-sm">אין נתונים</div>;
-  const total = data.reduce((s,d) => s+d.value, 0);
-  const CX=110,CY=110,R=90,ri=54;
-  let angle = -Math.PI/2;
-  const slices = data.map((d,i) => {
-    const pct = d.value/total;
-    const a0=angle, a1=angle+pct*2*Math.PI;
-    angle=a1;
-    const large=pct>.5?1:0;
-    const c0=Math.cos(a0),s0=Math.sin(a0),c1=Math.cos(a1),s1=Math.sin(a1);
-    const path=[`M ${CX+R*c0} ${CY+R*s0}`,`A ${R} ${R} 0 ${large} 1 ${CX+R*c1} ${CY+R*s1}`,
-                `L ${CX+ri*c1} ${CY+ri*s1}`,`A ${ri} ${ri} 0 ${large} 0 ${CX+ri*c0} ${CY+ri*s0}`,'Z'].join(' ');
-    const mid=(a0+a1)/2, lR=(R+ri)/2;
-    return { ...d, path, pct, lx:CX+lR*Math.cos(mid), ly:CY+lR*Math.sin(mid) };
+/* ── SVG DONUT ── */
+function DonutChart({data,size=180,cx_label='',cx_val=''}) {
+  const [hov,setHov]=useState(null);
+  if(!data||!data.length) return null;
+  const total=data.reduce((s,d)=>s+d.value,0);
+  if(!total) return null;
+  const CX=90,CY=90,R=72,ri=44; let angle=-Math.PI/2;
+  const slices=data.map((d,i)=>{
+    const pct=d.value/total,a0=angle,a1=angle+pct*2*Math.PI; angle=a1;
+    const lg=pct>.5?1:0,c0=Math.cos(a0),s0=Math.sin(a0),c1=Math.cos(a1),s1=Math.sin(a1);
+    const path=[`M ${CX+R*c0} ${CY+R*s0}`,`A ${R} ${R} 0 ${lg} 1 ${CX+R*c1} ${CY+R*s1}`,
+      `L ${CX+ri*c1} ${CY+ri*s1}`,`A ${ri} ${ri} 0 ${lg} 0 ${CX+ri*c0} ${CY+ri*s0}`,'Z'].join(' ');
+    const mid=(a0+a1)/2,lR=(R+ri)/2;
+    return{...d,path,pct,lx:CX+lR*Math.cos(mid),ly:CY+lR*Math.sin(mid)};
   });
   return (
-    <div>
-      <svg viewBox="0 0 220 220" style={{width:'100%',maxHeight:200,overflow:'visible'}}
-           onMouseLeave={()=>{setHov(null);setTip(null);}}>
-        {slices.map((s,i) => (
-          <g key={i}>
-            <path d={s.path} fill={s.color} opacity={hov===null||hov===i?1:.45}
-                  style={{cursor:'pointer',transition:'opacity .15s'}}
-                  onMouseEnter={e=>{setHov(i);setTip({x:e.clientX,y:e.clientY,s});}}
-                  onMouseMove={e=>setTip(t=>({...t,x:e.clientX,y:e.clientY}))} />
-            {s.pct>=.07 && (
-              <text x={s.lx} y={s.ly} textAnchor="middle" dominantBaseline="central"
-                    fill="white" fontSize="11" fontWeight="700" style={{pointerEvents:'none'}}>
-                {(s.pct*100).toFixed(0)}%
-              </text>
-            )}
-          </g>
-        ))}
-        <text x={CX} y={CY-9}  textAnchor="middle" fontSize="10" fill="#9CA3AF">{centerLabel||'סה"כ'}</text>
-        <text x={CX} y={CY+11} textAnchor="middle" fontSize="13" fontWeight="800" fill="#111827">{centerValue||fmtILS(total)}</text>
-      </svg>
-      {tip && (
-        <div style={{position:'fixed',left:tip.x+12,top:tip.y-10,background:'#fff',border:'1px solid #e5e7eb',
-                     borderRadius:12,padding:'8px 12px',boxShadow:'0 4px 20px rgba(0,0,0,.12)',
-                     fontSize:13,zIndex:9999,pointerEvents:'none',direction:'rtl'}}>
-          <p style={{fontWeight:700}}>{tip.s.emoji||'▪'} {tip.s.name}</p>
-          <p style={{color:'#374151',marginTop:2}}>{fmtILS(tip.s.value)}</p>
-          <p style={{color:'#9CA3AF',fontSize:11}}>{(tip.s.pct*100).toFixed(1)}% מהסך</p>
-        </div>
-      )}
-      <div className="mt-3 space-y-1.5 max-h-36 overflow-y-auto scrollbar-hide">
-        {data.map(item => (
-          <div key={item.name} className="flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{background:item.color}}/>
-              <span className="text-gray-600">{item.emoji||''} {item.name}</span>
-            </div>
-            <span className="font-semibold text-gray-800">{fmtILS(item.value)}</span>
-          </div>
-        ))}
-      </div>
-    </div>
+    <svg viewBox="0 0 180 180" style={{width:'100%',maxWidth:size,display:'block',margin:'0 auto'}}
+         onMouseLeave={()=>setHov(null)}>
+      {slices.map((s,i)=>(
+        <g key={i} onMouseEnter={()=>setHov(i)} onTouchStart={()=>setHov(i===hov?null:i)}>
+          <path d={s.path} fill={s.color} opacity={hov===null||hov===i?1:.45}
+                style={{transition:'opacity .15s',cursor:'pointer'}}/>
+          {s.pct>=.08&&<text x={s.lx} y={s.ly} textAnchor="middle" dominantBaseline="central"
+            fill="white" fontSize="10" fontWeight="700" style={{pointerEvents:'none'}}>
+            {(s.pct*100).toFixed(0)}%</text>}
+        </g>
+      ))}
+      {hov!==null&&slices[hov]
+        ?<>
+          <text x={CX} y={CY-8} textAnchor="middle" fontSize="10" fill="#6B7280">{slices[hov].name}</text>
+          <text x={CX} y={CY+10} textAnchor="middle" fontSize="13" fontWeight="800" fill="#111">{fmtILS(slices[hov].value)}</text>
+        </>
+        :<>
+          <text x={CX} y={CY-8} textAnchor="middle" fontSize="10" fill="#9CA3AF">{cx_label||'סה"כ'}</text>
+          <text x={CX} y={CY+10} textAnchor="middle" fontSize="13" fontWeight="800" fill="#111">{cx_val||fmtILS(total)}</text>
+        </>
+      }
+    </svg>
   );
 }
 
-/* ═══════════════════════════════════════════════════
-   LOCALSTORAGE  +  LIVE DATA HELPERS
-═══════════════════════════════════════════════════ */
-const LS_FINNHUB = 'fil_finnhub_key';
-const LS_INV     = 'fil_inv_values';
-
-function lsGet(key, fallback) {
-  try { const v = localStorage.getItem(key); return v !== null ? JSON.parse(v) : fallback; }
-  catch(e) { return fallback; }
-}
-function lsSet(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch(e) {} }
-
-/* Fetch one quote from Finnhub (requires free API key) */
-async function fetchFinnhub(symbol, apiKey) {
-  const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${apiKey}`);
-  if (!r.ok) throw new Error(r.status);
-  const d = await r.json();
-  if (!d || d.c <= 0) throw new Error('no data');
-  return { price: d.c, changePct: d.dp ?? 0, prevClose: d.pc };
-}
-
-/* Fetch live USD→ILS exchange rate (no key needed) */
-async function fetchUsdIls() {
-  try {
-    const r = await fetch('https://open.er-api.com/v6/latest/USD');
-    const d = await r.json();
-    return d?.rates?.ILS ?? USD_ILS;
-  } catch(e) { return USD_ILS; }
-}
-
-/* ═══════════════════════════════════════════════════
-   PROGRESS BAR
-═══════════════════════════════════════════════════ */
-function ProgressBar({ pct, color, label, sublabel }) {
-  const p = Math.max(0, Math.min(100, pct));
-  return (
-    <div>
-      <div className="flex justify-between text-xs text-gray-500 mb-1">
-        <span>{label}</span><span>{sublabel}</span>
-      </div>
-      <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
-        <div className="h-full rounded-full transition-all duration-700"
-             style={{width:`${p}%`, background:color}} />
-      </div>
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════════════
-   KEREN HISHTALMUT CARD
-═══════════════════════════════════════════════════ */
-function KerenCard() {
-  const stored     = lsGet(LS_INV, {});
-  const [value, setValue]     = useState(stored.kerenValue ?? KEREN.currentValue);
-  const [ytd,   setYtd]       = useState(stored.kerenYTD   ?? KEREN.ytdReturn);
-  const [editing, setEditing] = useState(false);
-  const [tmpVal,  setTmpVal]  = useState('');
-  const [tmpYtd,  setTmpYtd]  = useState('');
-  const [updatedAt, setUpdatedAt] = useState(stored.kerenUpdated ?? null);
-
-  function startEdit() { setTmpVal(value); setTmpYtd(ytd); setEditing(true); }
-  function saveEdit() {
-    const v = parseFloat(tmpVal), y = parseFloat(tmpYtd);
-    if (!isNaN(v) && v > 0) {
-      const ts = new Date().toISOString();
-      setValue(v); setYtd(isNaN(y)?ytd:y); setUpdatedAt(ts);
-      lsSet(LS_INV, { ...lsGet(LS_INV,{}), kerenValue:v, kerenYTD:isNaN(y)?ytd:y, kerenUpdated:ts });
-    }
-    setEditing(false);
-  }
-
-  const now        = new Date();
-  const totalDays  = (KEREN.maturityDate - KEREN.startDate) / 864e5;
-  const elapsed    = (now - KEREN.startDate) / 864e5;
-  const pct        = Math.min(100, (elapsed/totalDays)*100);
-  const mature     = now >= KEREN.maturityDate;
-  const monthsLeft = Math.ceil(Math.max(0, KEREN.maturityDate - now) / (30*864e5));
-  const gain       = value - KEREN.totalContributed;
-
-  return (
-    <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden card-lift">
-      <div className="p-4 flex items-center gap-3" style={{background:'linear-gradient(135deg,#0f172a,#1e3a5f)'}}>
-        <span style={{fontSize:28}}>📈</span>
-        <div className="flex-1 text-white">
-          <p className="font-bold text-base">קרן השתלמות</p>
-          <p style={{opacity:.7,fontSize:12}}>{KEREN.provider} · {KEREN.track}</p>
-        </div>
-        <div className="text-left text-white">
-          <p className="text-xl font-extrabold">{fmtILS(value)}</p>
-          <p style={{opacity:.7,fontSize:11,textAlign:'center'}}>שווי נוכחי</p>
-        </div>
-      </div>
-
-      {/* Manual update notice */}
-      <div className="px-4 pt-3 flex items-center justify-between">
-        <p className="text-xs text-gray-400">
-          {updatedAt
-            ? `עודכן ידנית: ${new Intl.DateTimeFormat('he-IL',{day:'numeric',month:'short',year:'numeric'}).format(new Date(updatedAt))}`
-            : 'ℹ️ עדכן ידנית מדוח gemel.co.il'}
-        </p>
-        <button onClick={startEdit}
-                style={{fontSize:12,color:'#3B82F6',fontWeight:600,background:'none',border:'none',cursor:'pointer',padding:'2px 8px',borderRadius:8,background:'#eff6ff'}}>
-          ✏️ עדכן שווי
-        </button>
-      </div>
-
-      {editing && (
-        <div className="mx-4 mt-3 bg-blue-50 rounded-xl p-3 space-y-2">
-          <p className="text-xs font-semibold text-blue-800">הזן ערכים מדוח הקרן:</p>
-          <div className="flex gap-2">
-            <div className="flex-1">
-              <label className="text-xs text-blue-700 block mb-1">שווי נוכחי (₪)</label>
-              <input type="number" value={tmpVal} onChange={e=>setTmpVal(e.target.value)}
-                     style={{width:'100%',border:'1px solid #bfdbfe',borderRadius:8,padding:'6px 10px',fontSize:13}}
-                     placeholder="87450" />
-            </div>
-            <div style={{width:90}}>
-              <label className="text-xs text-blue-700 block mb-1">תשואה YTD %</label>
-              <input type="number" step="0.1" value={tmpYtd} onChange={e=>setTmpYtd(e.target.value)}
-                     style={{width:'100%',border:'1px solid #bfdbfe',borderRadius:8,padding:'6px 10px',fontSize:13}}
-                     placeholder="8.3" />
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <button onClick={saveEdit}
-                    style={{flex:1,background:'#3B82F6',color:'white',border:'none',borderRadius:8,padding:'7px',fontSize:13,fontWeight:700,cursor:'pointer'}}>
-              שמור ✓
-            </button>
-            <button onClick={()=>setEditing(false)}
-                    style={{padding:'7px 12px',background:'#e5e7eb',border:'none',borderRadius:8,fontSize:13,cursor:'pointer'}}>
-              ביטול
-            </button>
-          </div>
-        </div>
-      )}
-
-      <div className="p-4 space-y-4">
-        <ProgressBar pct={pct} color={mature?'#22C55E':'#3B82F6'}
-          label={mature?'✅ פתוחה למשיכה!':`⏳ ${monthsLeft} חודשים לפדיון`}
-          sublabel={`${pct.toFixed(0)}% מ-6 שנים`} />
-        {mature && <p className="text-xs text-green-600 font-semibold">הקרן בשלה — ניתן למשוך פטור ממס!</p>}
-
-        <div className="grid grid-cols-3 gap-3">
-          {[
-            { label:'הפקדה חודשית',       val: fmtILS(KEREN.monthlyEmployee + KEREN.monthlyEmployer) },
-            { label:'תשואה שנתית ממוצעת', val: fmtPct(KEREN.avgAnnualReturn,true) },
-            { label:'רווח כולל',           val: fmtILS(gain) },
-          ].map(s => (
-            <div key={s.label} className="bg-gray-50 rounded-xl p-3 text-center">
-              <p className="text-xs text-gray-400 mb-1" style={{lineHeight:1.3}}>{s.label}</p>
-              <p className="text-sm font-bold text-gray-800">{s.val}</p>
-            </div>
-          ))}
-        </div>
-
-        <div className="bg-blue-50 rounded-xl p-3 text-sm">
-          <p className="font-semibold text-blue-800 mb-2">הפקדה חודשית — פירוט</p>
-          <div className="flex justify-between text-blue-700"><span>עובד (2.5%)</span><span>{fmtILS(KEREN.monthlyEmployee)}</span></div>
-          <div className="flex justify-between text-blue-700 mt-1"><span>מעסיק (7.5%)</span><span>{fmtILS(KEREN.monthlyEmployer)}</span></div>
-          <div className="flex justify-between text-blue-900 font-bold mt-1.5 pt-1.5 border-t border-blue-200">
-            <span>סה"כ חודשי</span><span>{fmtILS(KEREN.monthlyEmployee + KEREN.monthlyEmployer)}</span>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between bg-green-50 rounded-xl p-3">
-          <span className="text-sm text-green-800 font-medium">תשואה מתחילת שנה (YTD)</span>
-          <span className="text-lg font-extrabold text-green-600">+{ytd}%</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════════════
-   PENSION CARD
-═══════════════════════════════════════════════════ */
-function PensionCard() {
-  const stored     = lsGet(LS_INV, {});
-  const [value, setValue]     = useState(stored.pensionValue ?? PENSION.currentValue);
-  const [ytd,   setYtd]       = useState(stored.pensionYTD   ?? PENSION.ytdReturn);
-  const [editing, setEditing] = useState(false);
-  const [tmpVal,  setTmpVal]  = useState('');
-  const [tmpYtd,  setTmpYtd]  = useState('');
-  const [updatedAt, setUpdatedAt] = useState(stored.pensionUpdated ?? null);
-
-  function startEdit() { setTmpVal(value); setTmpYtd(ytd); setEditing(true); }
-  function saveEdit() {
-    const v = parseFloat(tmpVal), y = parseFloat(tmpYtd);
-    if (!isNaN(v) && v > 0) {
-      const ts = new Date().toISOString();
-      setValue(v); setYtd(isNaN(y)?ytd:y); setUpdatedAt(ts);
-      lsSet(LS_INV, { ...lsGet(LS_INV,{}), pensionValue:v, pensionYTD:isNaN(y)?ytd:y, pensionUpdated:ts });
-    }
-    setEditing(false);
-  }
-
-  const gain = value - PENSION.totalContributed;
-  const yearsToRetirement = PENSION.retirementAge - PENSION.currentAge;
-
-  return (
-    <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden card-lift">
-      <div className="p-4 flex items-center gap-3" style={{background:'linear-gradient(135deg,#1a1a2e,#4a1942)'}}>
-        <span style={{fontSize:28}}>🏛️</span>
-        <div className="flex-1 text-white">
-          <p className="font-bold text-base">פנסיה</p>
-          <p style={{opacity:.7,fontSize:12}}>{PENSION.provider} · {PENSION.track}</p>
-        </div>
-        <div className="text-left text-white">
-          <p className="text-xl font-extrabold">{fmtILS(value)}</p>
-          <p style={{opacity:.7,fontSize:11,textAlign:'center'}}>שווי נוכחי</p>
-        </div>
-      </div>
-
-      <div className="px-4 pt-3 flex items-center justify-between">
-        <p className="text-xs text-gray-400">
-          {updatedAt
-            ? `עודכן: ${new Intl.DateTimeFormat('he-IL',{day:'numeric',month:'short',year:'numeric'}).format(new Date(updatedAt))}`
-            : 'ℹ️ עדכן ידנית מ-pension.mof.gov.il'}
-        </p>
-        <button onClick={startEdit}
-                style={{fontSize:12,color:'#8B5CF6',fontWeight:600,background:'#f5f3ff',border:'none',cursor:'pointer',padding:'2px 8px',borderRadius:8}}>
-          ✏️ עדכן שווי
-        </button>
-      </div>
-
-      {editing && (
-        <div className="mx-4 mt-3 bg-purple-50 rounded-xl p-3 space-y-2">
-          <p className="text-xs font-semibold text-purple-800">הזן ערכים מדוח הפנסיה:</p>
-          <div className="flex gap-2">
-            <div className="flex-1">
-              <label className="text-xs text-purple-700 block mb-1">שווי נוכחי (₪)</label>
-              <input type="number" value={tmpVal} onChange={e=>setTmpVal(e.target.value)}
-                     style={{width:'100%',border:'1px solid #ddd6fe',borderRadius:8,padding:'6px 10px',fontSize:13}}
-                     placeholder="124500" />
-            </div>
-            <div style={{width:90}}>
-              <label className="text-xs text-purple-700 block mb-1">תשואה YTD %</label>
-              <input type="number" step="0.1" value={tmpYtd} onChange={e=>setTmpYtd(e.target.value)}
-                     style={{width:'100%',border:'1px solid #ddd6fe',borderRadius:8,padding:'6px 10px',fontSize:13}}
-                     placeholder="6.8" />
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <button onClick={saveEdit}
-                    style={{flex:1,background:'#8B5CF6',color:'white',border:'none',borderRadius:8,padding:'7px',fontSize:13,fontWeight:700,cursor:'pointer'}}>
-              שמור ✓
-            </button>
-            <button onClick={()=>setEditing(false)}
-                    style={{padding:'7px 12px',background:'#e5e7eb',border:'none',borderRadius:8,fontSize:13,cursor:'pointer'}}>
-              ביטול
-            </button>
-          </div>
-        </div>
-      )}
-
-      <div className="p-4 space-y-4">
-        <ProgressBar pct={(PENSION.currentAge/PENSION.retirementAge)*100} color="#8B5CF6"
-          label={`גיל נוכחי: ${PENSION.currentAge}`} sublabel={`${yearsToRetirement} שנים לפרישה`} />
-
-        <div className="rounded-xl p-4 text-center" style={{background:'linear-gradient(135deg,#f3e8ff,#ede9fe)'}}>
-          <p className="text-xs text-purple-600 mb-1">צבירה חזויה בגיל {PENSION.retirementAge}</p>
-          <p className="text-3xl font-extrabold text-purple-900">{fmtILS(PENSION.projectedValue)}</p>
-          <p className="text-xs text-purple-500 mt-1">בהנחת תשואה ממוצעת {PENSION.avgAnnualReturn}%</p>
-        </div>
-
-        <div className="grid grid-cols-3 gap-3">
-          {[
-            { label:'הפקדה חודשית', val: fmtILS(PENSION.monthlyEmployee + PENSION.monthlyEmployer) },
-            { label:'תשואה YTD',    val: fmtPct(ytd,true) },
-            { label:'רווח כולל',    val: fmtILS(gain) },
-          ].map(s => (
-            <div key={s.label} className="bg-gray-50 rounded-xl p-3 text-center">
-              <p className="text-xs text-gray-400 mb-1" style={{lineHeight:1.3}}>{s.label}</p>
-              <p className="text-sm font-bold text-gray-800">{s.val}</p>
-            </div>
-          ))}
-        </div>
-
-        <div className="bg-purple-50 rounded-xl p-3 text-sm">
-          <p className="font-semibold text-purple-800 mb-2">הפקדה חודשית — פירוט</p>
-          <div className="flex justify-between text-purple-700"><span>עובד (6%)</span><span>{fmtILS(PENSION.monthlyEmployee)}</span></div>
-          <div className="flex justify-between text-purple-700 mt-1"><span>מעסיק (תגמולים + פיצויים)</span><span>{fmtILS(PENSION.monthlyEmployer)}</span></div>
-          <div className="flex justify-between text-purple-900 font-bold mt-1.5 pt-1.5 border-t border-purple-200">
-            <span>סה"כ חודשי</span><span>{fmtILS(PENSION.monthlyEmployee + PENSION.monthlyEmployer)}</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════════════
-   STOCK PORTFOLIO
-═══════════════════════════════════════════════════ */
-function StockPortfolio() {
-  const [prices,     setPrices]     = useState(INIT_PRICES);
-  const [dayChanges, setDayChanges] = useState({});
-  const [usdIls,     setUsdIls]     = useState(USD_ILS);
-  const [apiKey,     setApiKey]     = useState(() => lsGet(LS_FINNHUB, ''));
-  const [keyInput,   setKeyInput]   = useState('');
-  const [showKeyBox, setShowKeyBox] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [liveMode,   setLiveMode]   = useState(false);
-  const [error,      setError]      = useState(null);
-  const [lastUpdate, setLastUpdate] = useState(new Date());
-
-  /* Fetch live exchange rate once on mount */
-  useEffect(() => { fetchUsdIls().then(r => setUsdIls(r)); }, []);
-
-  /* Auto-fetch if key already saved */
-  useEffect(() => { if (apiKey) doLiveFetch(apiKey); }, []);
-
-  async function doLiveFetch(key) {
-    setRefreshing(true); setError(null);
-    const syms = PORTFOLIO_DEF.map(s => s.symbol);
-    const newPrices = {}, newChanges = {};
-    let fetched = 0;
-    await Promise.all(syms.map(async sym => {
-      try {
-        const q = await fetchFinnhub(sym, key);
-        newPrices[sym]  = q.price;
-        newChanges[sym] = q.changePct;
-        fetched++;
-      } catch(e) { /* keep mock price for this symbol */ }
-    }));
-    if (fetched > 0) {
-      setPrices(prev => ({ ...prev, ...newPrices }));
-      setDayChanges(newChanges);
-      setLiveMode(true);
-      setLastUpdate(new Date());
-    } else {
-      setError('לא ניתן לטעון נתונים — בדוק מפתח API');
-    }
-    setRefreshing(false);
-  }
-
-  function saveKey() {
-    const k = keyInput.trim();
-    if (!k) return;
-    lsSet(LS_FINNHUB, k);
-    setApiKey(k);
-    setShowKeyBox(false);
-    setKeyInput('');
-    doLiveFetch(k);
-  }
-
-  function simulateRefresh() {
-    setRefreshing(true);
-    setTimeout(() => {
-      setPrices(prev => {
-        const next = {};
-        for (const sym in prev) {
-          const chg = 1 + (Math.random() * 0.06 - 0.03);
-          next[sym] = Math.round(prev[sym] * chg * 100) / 100;
-        }
-        return next;
-      });
-      setLastUpdate(new Date()); setRefreshing(false);
-    }, 700);
-  }
-
-  const rows = PORTFOLIO_DEF.map(s => {
-    const currentPrice = prices[s.symbol] || s.avgCost;
-    const costBasis    = s.shares * s.avgCost;
-    const currentVal   = s.shares * currentPrice;
-    const plUSD        = currentVal - costBasis;
-    const plPct        = (plUSD / costBasis) * 100;
-    const valILS       = currentVal * usdIls;
-    return { ...s, currentPrice, costBasis, currentVal, plUSD, plPct, valILS };
+/* ── ONBOARDING ── */
+function Onboarding({onDone}) {
+  const [step,setStep]=useState(1);
+  const STEPS=6;
+  const [d,setD]=useState({
+    name:'', netSalary:'', grossSalary:'',
+    hasKeren:true, kerenEmp:2.5, kerenEr:7.5,
+    hasPension:true, pensionEmp:6, pensionEr:14.83, pensionProvider:'',
+    bankBalance:'', creditDebt:'',
+    rent:'', rentDay:1, otherFixed:[],
   });
+  const set=(k,v)=>setD(p=>({...p,[k]:v}));
 
-  const totalCost    = rows.reduce((s,r) => s + r.costBasis, 0);
-  const totalValUSD  = rows.reduce((s,r) => s + r.currentVal, 0);
-  const totalValILS  = totalValUSD * USD_ILS;
-  const totalPL      = totalValUSD - totalCost;
-  const totalPLPct   = (totalPL/totalCost)*100;
+  function finish() {
+    const profile={
+      ...d,
+      netSalary:  parseFloat(d.netSalary)||0,
+      grossSalary:parseFloat(d.grossSalary)||0,
+      bankBalance:parseFloat(d.bankBalance)||0,
+      creditDebt: parseFloat(d.creditDebt)||0,
+      rent:       parseFloat(d.rent)||0,
+      createdAt:  new Date().toISOString(),
+    };
+    lsSet(LS.PROFILE, profile);
+    lsSet(LS.DONE, true);
+    // seed recurring from rent
+    if (profile.rent>0) {
+      lsSet(LS.RECURRING,[{id:1,name:'שכר דירה',amount:profile.rent,dueDay:profile.rentDay,emoji:'🏠'}]);
+    }
+    onDone(profile);
+  }
 
-  const chartData = rows.map(r => ({
-    name: r.symbol, value: r.valILS, color: r.color, emoji: ''
-  }));
+  const next = () => step<STEPS ? setStep(s=>s+1) : finish();
+  const back = () => setStep(s=>s-1);
+  const canNext = [
+    ()=>d.name.trim().length>0,
+    ()=>parseFloat(d.netSalary)>0,
+    ()=>true,
+    ()=>true,
+    ()=>true,
+    ()=>true,
+  ][step-1];
+
+  const pct = (step/STEPS)*100;
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden card-lift">
-      {/* Header */}
-      <div className="p-4 flex items-center gap-3"
-           style={{background:'linear-gradient(135deg,#052e16,#14532d)'}}>
-        <span style={{fontSize:28}}>📊</span>
-        <div className="flex-1 text-white">
-          <p className="font-bold text-base flex items-center gap-2">
-            תיק מניות
-            {liveMode
-              ? <span style={{background:'#22C55E',fontSize:10,padding:'1px 6px',borderRadius:10,fontWeight:700}}>🔴 LIVE</span>
-              : <span style={{background:'rgba(255,255,255,.2)',fontSize:10,padding:'1px 6px',borderRadius:10}}>DEMO</span>
-            }
-          </p>
-          <p style={{opacity:.7,fontSize:12}}>
-            {rows.length} החזקות · עודכן {new Intl.DateTimeFormat('he-IL',{hour:'2-digit',minute:'2-digit'}).format(lastUpdate)}
-          </p>
+    <div style={{minHeight:'100vh',background:'linear-gradient(160deg,#0f172a 0%,#1e3a5f 100%)',
+                 display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'24px 20px'}}>
+      <div style={{width:'100%',maxWidth:440}}>
+        {/* Logo */}
+        <div style={{textAlign:'center',marginBottom:32}}>
+          <div style={{fontSize:42,marginBottom:8}}>💎</div>
+          <p style={{color:'white',fontSize:22,fontWeight:800,margin:0}}>FinanceIL</p>
+          <p style={{color:'rgba(255,255,255,.5)',fontSize:13,margin:'4px 0 0'}}>הגדרה ראשונית</p>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="text-left text-white">
-            <p className="text-xl font-extrabold">{fmtILS(totalValILS)}</p>
-            <p style={{opacity:.7,fontSize:11,textAlign:'center'}}>שווי נוכחי</p>
+
+        {/* Progress */}
+        <div style={{marginBottom:24}}>
+          <div style={{height:4,background:'rgba(255,255,255,.15)',borderRadius:4}}>
+            <div style={{height:'100%',width:`${pct}%`,background:'#22C55E',borderRadius:4,transition:'width .4s'}}/>
           </div>
-          <button onClick={()=>setShowKeyBox(v=>!v)}
-                  style={{background:'rgba(255,255,255,.15)',border:'none',borderRadius:10,padding:'8px 10px',
-                          color:'white',cursor:'pointer',fontSize:16}} title="הגדר מפתח Finnhub">⚙️</button>
-          <button onClick={apiKey ? ()=>doLiveFetch(apiKey) : simulateRefresh} disabled={refreshing}
-                  style={{background:'rgba(255,255,255,.15)',border:'none',borderRadius:10,padding:'8px 12px',
-                          color:'white',cursor:'pointer',fontSize:13,fontWeight:600}}>
-            <span className={refreshing?'spin':''} style={{display:'inline-block'}}>🔄</span>
-            {!refreshing && (apiKey?' Live':' רענן')}
+          <p style={{color:'rgba(255,255,255,.5)',fontSize:12,textAlign:'center',marginTop:8}}>שלב {step} מתוך {STEPS}</p>
+        </div>
+
+        {/* Card */}
+        <div className="card slide-up" style={{padding:28,background:'white'}}>
+
+          {step===1 && (
+            <div>
+              <p style={{fontSize:22,fontWeight:800,color:'#111',marginBottom:6}}>👋 היי! מה שמך?</p>
+              <p style={{fontSize:14,color:'#6B7280',marginBottom:24}}>נתחיל בהיכרות קצרה</p>
+              <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>שם פרטי</label>
+              <input className="input" placeholder="ישראל ישראלי" value={d.name}
+                     onChange={e=>set('name',e.target.value)}
+                     onKeyDown={e=>e.key==='Enter'&&canNext()&&next()} autoFocus/>
+            </div>
+          )}
+
+          {step===2 && (
+            <div>
+              <p style={{fontSize:22,fontWeight:800,color:'#111',marginBottom:6}}>💰 כמה אתה מרוויח?</p>
+              <p style={{fontSize:14,color:'#6B7280',marginBottom:24}}>נשתמש בזה לחישוב תקציב חכם</p>
+              <div style={{marginBottom:16}}>
+                <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>שכר נטו (לאחר ניכויים) ₪</label>
+                <input className="input input-num" type="number" placeholder="14000" value={d.netSalary}
+                       onChange={e=>set('netSalary',e.target.value)}/>
+                <p style={{fontSize:11,color:'#9CA3AF',marginTop:4}}>הסכום שנכנס לחשבון הבנק בפועל</p>
+              </div>
+              <div>
+                <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>שכר ברוטו ₪ <span style={{color:'#9CA3AF',fontWeight:400}}>(אופציונלי)</span></label>
+                <input className="input input-num" type="number" placeholder="18000" value={d.grossSalary}
+                       onChange={e=>set('grossSalary',e.target.value)}/>
+              </div>
+            </div>
+          )}
+
+          {step===3 && (
+            <div>
+              <p style={{fontSize:22,fontWeight:800,color:'#111',marginBottom:6}}>📋 הפרשות שכר</p>
+              <p style={{fontSize:14,color:'#6B7280',marginBottom:20}}>אלו ייקחו בחשבון בחישוב תיק ההשקעות</p>
+
+              {/* Keren */}
+              <div style={{background:'#eff6ff',borderRadius:14,padding:16,marginBottom:16}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+                  <span style={{fontWeight:700,fontSize:15}}>📈 קרן השתלמות</span>
+                  <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer'}}>
+                    <input type="checkbox" checked={d.hasKeren} onChange={e=>set('hasKeren',e.target.checked)}
+                           style={{width:18,height:18,accentColor:'#22C55E'}}/>
+                    <span style={{fontSize:13}}>יש לי</span>
+                  </label>
+                </div>
+                {d.hasKeren&&(
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                    <div>
+                      <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>עובד %</label>
+                      <input className="input input-num" type="number" step="0.5" value={d.kerenEmp}
+                             onChange={e=>set('kerenEmp',parseFloat(e.target.value)||2.5)}
+                             style={{padding:'10px 12px',fontSize:14}}/>
+                    </div>
+                    <div>
+                      <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>מעסיק %</label>
+                      <input className="input input-num" type="number" step="0.5" value={d.kerenEr}
+                             onChange={e=>set('kerenEr',parseFloat(e.target.value)||7.5)}
+                             style={{padding:'10px 12px',fontSize:14}}/>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Pension */}
+              <div style={{background:'#f5f3ff',borderRadius:14,padding:16}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+                  <span style={{fontWeight:700,fontSize:15}}>🏛️ פנסיה</span>
+                  <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer'}}>
+                    <input type="checkbox" checked={d.hasPension} onChange={e=>set('hasPension',e.target.checked)}
+                           style={{width:18,height:18,accentColor:'#8B5CF6'}}/>
+                    <span style={{fontSize:13}}>יש לי</span>
+                  </label>
+                </div>
+                {d.hasPension&&(
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                    <div>
+                      <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>עובד %</label>
+                      <input className="input input-num" type="number" step="0.5" value={d.pensionEmp}
+                             onChange={e=>set('pensionEmp',parseFloat(e.target.value)||6)}
+                             style={{padding:'10px 12px',fontSize:14}}/>
+                    </div>
+                    <div>
+                      <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>מעסיק %</label>
+                      <input className="input input-num" type="number" step="0.5" value={d.pensionEr}
+                             onChange={e=>set('pensionEr',parseFloat(e.target.value)||14.83)}
+                             style={{padding:'10px 12px',fontSize:14}}/>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {step===4 && (
+            <div>
+              <p style={{fontSize:22,fontWeight:800,color:'#111',marginBottom:6}}>🏦 מצב כספי נוכחי</p>
+              <p style={{fontSize:14,color:'#6B7280',marginBottom:24}}>נתחיל לחשב את שווי הנכסים שלך</p>
+              <div style={{marginBottom:16}}>
+                <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>יתרה בבנק (עו"ש) ₪</label>
+                <input className="input input-num" type="number" placeholder="0" value={d.bankBalance}
+                       onChange={e=>set('bankBalance',e.target.value)}/>
+              </div>
+              <div>
+                <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>חוב כרטיס אשראי ₪ <span style={{color:'#9CA3AF',fontWeight:400}}>(אם יש)</span></label>
+                <input className="input input-num" type="number" placeholder="0" value={d.creditDebt}
+                       onChange={e=>set('creditDebt',e.target.value)}/>
+              </div>
+            </div>
+          )}
+
+          {step===5 && (
+            <div>
+              <p style={{fontSize:22,fontWeight:800,color:'#111',marginBottom:6}}>🏠 הוצאות קבועות</p>
+              <p style={{fontSize:14,color:'#6B7280',marginBottom:24}}>נחשב מה יישאר לך מהמשכורת</p>
+              <div style={{marginBottom:16}}>
+                <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>שכר דירה / משכנתה ₪ לחודש</label>
+                <input className="input input-num" type="number" placeholder="0" value={d.rent}
+                       onChange={e=>set('rent',e.target.value)}/>
+              </div>
+              <div>
+                <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>יום הוראת קבע</label>
+                <input className="input input-num" type="number" min="1" max="31" placeholder="1" value={d.rentDay}
+                       onChange={e=>set('rentDay',parseInt(e.target.value)||1)}
+                       style={{maxWidth:100}}/>
+              </div>
+              <p style={{fontSize:12,color:'#9CA3AF',marginTop:16}}>💡 ניתן להוסיף עוד הוצאות קבועות אחרי ההגדרה</p>
+            </div>
+          )}
+
+          {step===6 && (
+            <div>
+              <p style={{fontSize:22,fontWeight:800,color:'#111',marginBottom:6}}>✅ הכל מוכן, {d.name}!</p>
+              <p style={{fontSize:14,color:'#6B7280',marginBottom:20}}>הנה ההקצאה החודשית המומלצת עבורך:</p>
+              {parseFloat(d.netSalary)>0 ? (
+                <div>
+                  <div style={{background:'linear-gradient(135deg,#f0fdf4,#dcfce7)',borderRadius:14,padding:16,marginBottom:16}}>
+                    <p style={{fontSize:13,color:'#15803d',marginBottom:4}}>שכר נטו חודשי</p>
+                    <p style={{fontSize:28,fontWeight:800,color:'#14532d'}}>{fmtILS(parseFloat(d.netSalary))}</p>
+                  </div>
+                  {calcBudget(parseFloat(d.netSalary)).map(b=>(
+                    <div key={b.key} style={{display:'flex',alignItems:'center',justifyContent:'space-between',
+                      padding:'10px 0',borderBottom:'1px solid #f3f4f6'}}>
+                      <div style={{display:'flex',alignItems:'center',gap:10}}>
+                        <span style={{width:10,height:10,borderRadius:'50%',background:b.color,flexShrink:0,display:'inline-block'}}/>
+                        <span style={{fontSize:14,color:'#374151'}}>{b.emoji} {b.key}</span>
+                      </div>
+                      <div style={{textAlign:'left'}}>
+                        <span style={{fontSize:14,fontWeight:700,color:'#111'}}>{fmtILS(b.amount)}</span>
+                        <span style={{fontSize:11,color:'#9CA3AF',marginRight:6}}>({b.pct}%)</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p style={{color:'#9CA3AF',fontSize:14}}>לא הוזן שכר — ניתן להגדיר בהגדרות</p>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Nav buttons */}
+        <div style={{display:'flex',gap:12,marginTop:20}}>
+          {step>1&&(
+            <button className="btn-secondary" onClick={back} style={{width:'auto',padding:'14px 24px'}}>
+              ← חזור
+            </button>
+          )}
+          <button className="btn-primary"
+                  onClick={next}
+                  disabled={!canNext()}
+                  style={{opacity:canNext()?1:.5}}>
+            {step===STEPS ? `🚀 בואו נתחיל!` : 'הבא →'}
           </button>
         </div>
       </div>
-
-      {/* Finnhub API key setup panel */}
-      {showKeyBox && (
-        <div className="p-4 border-b border-gray-100 bg-gray-50 space-y-2">
-          <p className="text-sm font-semibold text-gray-800">🔑 מפתח Finnhub API (חינם)</p>
-          <p className="text-xs text-gray-500">
-            קבל מפתח חינם ב-<a href="https://finnhub.io/register" target="_blank" rel="noopener"
-              style={{color:'#3B82F6',textDecoration:'underline'}}>finnhub.io/register</a> ← אחר כך הדבק כאן:
-          </p>
-          <div className="flex gap-2">
-            <input type="text" placeholder="c_xxxxxxxxxxxxxxxx" value={keyInput}
-                   onChange={e=>setKeyInput(e.target.value)}
-                   style={{flex:1,border:'1px solid #d1d5db',borderRadius:8,padding:'8px 12px',
-                           fontSize:13,direction:'ltr',fontFamily:'monospace'}} />
-            <button onClick={saveKey}
-                    style={{background:'#22C55E',color:'white',border:'none',borderRadius:8,
-                            padding:'8px 16px',fontWeight:700,fontSize:13,cursor:'pointer'}}>
-              שמור ✓
-            </button>
-          </div>
-          {apiKey && (
-            <p className="text-xs text-green-600">✅ מפתח שמור · שער דולר בזמן אמת: ₪{usdIls.toFixed(3)}</p>
-          )}
-          {error && <p className="text-xs text-red-500">⚠️ {error}</p>}
-        </div>
-      )}
-
-      {/* Summary strip */}
-      <div className="grid grid-cols-3 gap-0 border-b border-gray-100">
-        {[
-          { label:'עלות כוללת', val: fmtUSD(totalCost),   sub:null },
-          { label:'רווח/הפסד',  val: fmtUSD(totalPL),     sub: fmtPct(totalPLPct), pos: totalPL>=0 },
-          { label:'שער דולר',   val: `₪${usdIls.toFixed(3)}`, sub: liveMode?'בזמן אמת':'מדומה' },
-        ].map((s,i) => (
-          <div key={i} className={`p-3 text-center ${i<2?'border-l border-gray-100':''}`}>
-            <p className="text-xs text-gray-400 mb-0.5">{s.label}</p>
-            <p className={`text-sm font-bold ${s.pos!==undefined?(s.pos?'text-green-600':'text-red-500'):'text-gray-800'}`}>
-              {s.val}
-            </p>
-            {s.sub && <p className={`text-xs ${s.pos!==undefined?(s.pos?'text-green-500':'text-red-400'):'text-gray-400'}`}>{s.sub}</p>}
-          </div>
-        ))}
-      </div>
-
-      {/* Table */}
-      <div className="overflow-x-auto">
-        <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
-          <thead>
-            <tr style={{background:'#f9fafb',borderBottom:'1px solid #e5e7eb'}}>
-              {['נייר ערך','מחיר','שינוי','כמות','שווי ($)','שווי (₪)','רווח/הפסד'].map(h => (
-                <th key={h} style={{padding:'8px 12px',textAlign:'right',fontWeight:600,color:'#6b7280',whiteSpace:'nowrap'}}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r,i) => {
-              const dayChg = dayChanges[r.symbol] !== undefined
-                ? dayChanges[r.symbol]
-                : ((r.currentPrice - INIT_PRICES[r.symbol]) / INIT_PRICES[r.symbol]) * 100;
-              const pos       = r.plUSD >= 0;
-              const dayPos    = dayChg >= 0;
-              return (
-                <tr key={r.symbol} style={{borderBottom:'1px solid #f3f4f6',
-                  background: refreshing ? '#f9fafb' : 'white',
-                  transition:'background .3s'}}>
-                  <td style={{padding:'10px 12px'}}>
-                    <div style={{display:'flex',alignItems:'center',gap:8}}>
-                      <span style={{width:8,height:8,borderRadius:'50%',background:r.color,flexShrink:0,display:'inline-block'}}/>
-                      <div>
-                        <p style={{fontWeight:700,color:'#111827'}}>{r.symbol}</p>
-                        <p style={{fontSize:11,color:'#9CA3AF'}}>{r.name}</p>
-                      </div>
-                    </div>
-                  </td>
-                  <td style={{padding:'10px 12px',fontWeight:600}}>{fmtUSD(r.currentPrice)}</td>
-                  <td style={{padding:'10px 12px'}}>
-                    <span className={dayPos?'tag-green':'tag-red'}>{fmtPct(dayChg)}</span>
-                  </td>
-                  <td style={{padding:'10px 12px',color:'#374151'}}>{r.shares}</td>
-                  <td style={{padding:'10px 12px',fontWeight:600}}>{fmtUSD(r.currentVal)}</td>
-                  <td style={{padding:'10px 12px',fontWeight:600}}>{fmtILS(r.valILS)}</td>
-                  <td style={{padding:'10px 12px'}}>
-                    <p style={{fontWeight:700,color:pos?'#16a34a':'#dc2626'}}>{fmtUSD(r.plUSD)}</p>
-                    <p style={{fontSize:11,color:pos?'#16a34a':'#dc2626'}}>{fmtPct(r.plPct)}</p>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-          <tfoot>
-            <tr style={{background:'#f0fdf4',borderTop:'2px solid #bbf7d0'}}>
-              <td colSpan="4" style={{padding:'10px 12px',fontWeight:700,color:'#14532d'}}>סה"כ תיק</td>
-              <td style={{padding:'10px 12px',fontWeight:700,color:'#14532d'}}>{fmtUSD(totalValUSD)}</td>
-              <td style={{padding:'10px 12px',fontWeight:700,color:'#14532d'}}>{fmtILS(totalValILS)}</td>
-              <td style={{padding:'10px 12px'}}>
-                <p style={{fontWeight:700,color:totalPL>=0?'#16a34a':'#dc2626'}}>{fmtUSD(totalPL)}</p>
-                <p style={{fontSize:11,color:totalPL>=0?'#16a34a':'#dc2626'}}>{fmtPct(totalPLPct)}</p>
-              </td>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
-
-      {/* Allocation chart */}
-      <div className="p-4 border-t border-gray-100">
-        <p className="text-sm font-bold text-gray-800 mb-3">הקצאה לפי נייר ערך</p>
-        <DonutChart data={chartData} centerLabel="תיק" centerValue={fmtILS(totalValILS)} />
-      </div>
     </div>
   );
 }
 
-/* ═══════════════════════════════════════════════════
-   NET WORTH SUMMARY  (used on dashboard)
-═══════════════════════════════════════════════════ */
-function NetWorthCard({ bankTotal }) {
-  const portfolioILS = PORTFOLIO_DEF.reduce((s,r) => s + r.shares * INIT_PRICES[r.symbol] * USD_ILS, 0);
-  const total = bankTotal + KEREN.currentValue + PENSION.currentValue + portfolioILS;
-  const items = [
-    { label:'חשבונות בנק',     value:bankTotal,         color:'#3B82F6', emoji:'🏦' },
-    { label:'קרן השתלמות',     value:KEREN.currentValue, color:'#0f172a', emoji:'📈' },
-    { label:'פנסיה',            value:PENSION.currentValue, color:'#8B5CF6', emoji:'🏛️' },
-    { label:'תיק מניות',        value:portfolioILS,      color:'#22C55E', emoji:'📊' },
-  ];
+/* ── TRANSACTION ROW ── */
+function TxRow({tx,isNew}) {
+  const pos=tx.amount>=0;
   return (
-    <div className="rounded-2xl overflow-hidden card-lift"
-         style={{background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 100%)'}}>
-      <div className="p-5 text-white">
-        <p className="text-sm mb-1" style={{opacity:.7}}>שווי נקי כולל (Net Worth)</p>
-        <p className="font-extrabold" style={{fontSize:42,lineHeight:1}}>{fmtILS(total)}</p>
+    <div style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',
+                 borderBottom:'1px solid #f3f4f6',background:isNew?'#f0fdf4':'white',
+                 transition:'background 2s'}}>
+      <div style={{width:42,height:42,borderRadius:'50%',background:tx.color+'22',
+                   display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,flexShrink:0}}>
+        {tx.emoji}
       </div>
-      <div className="grid grid-cols-2 gap-0">
-        {items.map((item,i) => (
-          <div key={item.label}
-               className={`p-4 text-white ${i%2===0?'border-l':''}  ${i<2?'border-b':''}`}
-               style={{borderColor:'rgba(255,255,255,.1)'}}>
-            <div className="flex items-center gap-2 mb-1">
-              <span>{item.emoji}</span>
-              <span style={{fontSize:11,opacity:.65}}>{item.label}</span>
-            </div>
-            <p style={{fontWeight:700,fontSize:16}}>{fmtILS(item.value)}</p>
-            <p style={{fontSize:10,opacity:.5}}>{((item.value/total)*100).toFixed(0)}% מהתיק</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════════════
-   EXISTING SMALL COMPONENTS
-═══════════════════════════════════════════════════ */
-function Badge({ label, color }) {
-  return (
-    <span style={{background:color+'22',color}}
-          className="text-xs font-semibold px-2 py-0.5 rounded-full whitespace-nowrap">
-      {label}
-    </span>
-  );
-}
-function TxRow({ tx, isNew }) {
-  const pos = tx.amount >= 0;
-  return (
-    <div className={`flex items-center gap-3 p-3 rounded-xl transition-colors hover:bg-gray-50 ${isNew?'tx-new':''}`}>
-      <div className="w-10 h-10 rounded-full flex items-center justify-center text-lg flex-shrink-0"
-           style={{background:tx.color+'22'}}>{tx.emoji}</div>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-gray-800 truncate">{tx.description}</p>
-        <div className="flex items-center gap-2 mt-0.5">
-          <span className="text-xs text-gray-400">{fmtDate(tx.date)}</span>
-          <Badge label={tx.category} color={tx.color} />
+      <div style={{flex:1,minWidth:0}}>
+        <p style={{fontSize:14,fontWeight:600,color:'#111',margin:0,
+                   overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{tx.description}</p>
+        <div style={{display:'flex',alignItems:'center',gap:8,marginTop:3}}>
+          <span style={{fontSize:11,color:'#9CA3AF'}}>{fmtDate(tx.date)}</span>
+          <span style={{background:tx.color+'22',color:tx.color,borderRadius:6,
+                        padding:'1px 7px',fontSize:11,fontWeight:700}}>{tx.cat}</span>
         </div>
       </div>
-      <span className={`text-sm font-bold flex-shrink-0 ${pos?'text-green-600':'text-red-500'}`}>
+      <span style={{fontSize:15,fontWeight:700,color:pos?'#16a34a':'#dc2626',flexShrink:0}}>
         {pos?'+':''}{fmtILS(tx.amount)}
       </span>
     </div>
   );
 }
-function AccCard({ acc }) {
-  const debt = acc.balance < 0;
-  return (
-    <div className="bg-white rounded-2xl p-4 border border-gray-100 flex items-center gap-3 card-lift">
-      <div className="w-11 h-11 rounded-full flex items-center justify-center text-xl flex-shrink-0"
-           style={{background:acc.color+'22'}}>{acc.logo}</div>
-      <div className="flex-1">
-        <p className="text-sm font-bold text-gray-800">{acc.bank}</p>
-        <p className="text-xs text-gray-400">{acc.type} · {acc.num}</p>
-      </div>
-      <div className="text-left">
-        <p className={`text-sm font-bold ${debt?'text-red-500':'text-gray-800'}`}>{fmtILS(acc.balance)}</p>
-        {debt && <p className="text-xs text-gray-400 text-center">חוב</p>}
-      </div>
-    </div>
-  );
-}
 
-/* ═══════════════════════════════════════════════════
-   ADD TRANSACTION MODAL
-═══════════════════════════════════════════════════ */
-function AddModal({ onClose, onAdd }) {
-  const [desc,setDesc]=useState(''); const [amount,setAmount]=useState('');
-  const [type,setType]=useState('expense'); const [acct,setAcct]=useState('Max');
-  const preview = desc.length>2 ? categorizeTransaction(desc) : null;
-  function submit(e) {
+/* ── ADD TRANSACTION MODAL ── */
+function AddModal({onClose,onAdd}) {
+  const [desc,setDesc]=useState('');
+  const [amount,setAmount]=useState('');
+  const [type,setType]=useState('expense');
+  const [date,setDate]=useState(new Date().toISOString().split('T')[0]);
+  const preview=desc.length>2?categorize(desc):null;
+
+  function submit(e){
     e.preventDefault();
     const raw=parseFloat(amount);
     if(isNaN(raw)||raw<=0) return;
-    const finalAmount=type==='expense'?-(Math.round(raw*100)/100):Math.round(raw*100)/100;
-    onAdd({description:desc,amount:finalAmount,account:acct,
-           date:new Date().toISOString().split('T')[0],...categorizeTransaction(desc)});
+    const finalAmt=type==='expense'?-(Math.round(raw*100)/100):Math.round(raw*100)/100;
+    const cat=categorize(desc);
+    onAdd({id:Date.now(),description:desc,amount:finalAmt,date,
+           cat:cat.cat,color:cat.color,emoji:cat.emoji,account:'ידני'});
     onClose();
   }
+
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-end sm:items-center justify-center p-4"
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.5)',zIndex:100,
+                 display:'flex',alignItems:'flex-end',justifyContent:'center'}}
          onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div className="bg-white rounded-2xl w-full max-w-md modal-enter shadow-2xl">
-        <div className="flex items-center justify-between p-5 border-b border-gray-100">
-          <h3 className="text-lg font-bold text-gray-900">הוסף עסקה</h3>
-          <button onClick={onClose} className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-500 transition-colors">✕</button>
-        </div>
-        <form onSubmit={submit} className="p-5 space-y-4">
-          <div className="flex bg-gray-100 rounded-xl p-1 gap-1">
+      <div style={{background:'white',borderRadius:'24px 24px 0 0',width:'100%',maxWidth:500,
+                   maxHeight:'90vh',overflowY:'auto'}} className="slide-up">
+        <div style={{width:40,height:4,background:'#e5e7eb',borderRadius:2,margin:'12px auto'}}/>
+        <div style={{padding:'0 20px 20px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
+            <p style={{fontSize:18,fontWeight:800,margin:0}}>הוסף עסקה</p>
+            <button onClick={onClose} style={{border:'none',background:'#f3f4f6',borderRadius:'50%',
+              width:32,height:32,cursor:'pointer',fontSize:16}}>✕</button>
+          </div>
+
+          {/* Type toggle */}
+          <div style={{display:'flex',background:'#f3f4f6',borderRadius:12,padding:4,gap:4,marginBottom:20}}>
             {[['expense','הוצאה 💸'],['income','הכנסה 💰']].map(([v,l])=>(
-              <button key={v} type="button" onClick={()=>setType(v)}
-                      className={`flex-1 py-2 rounded-lg text-sm font-semibold transition-all ${type===v?`bg-white shadow-sm ${v==='expense'?'text-red-500':'text-green-600'}`:'text-gray-500'}`}>
+              <button key={v} onClick={()=>setType(v)} style={{
+                flex:1,padding:'10px',border:'none',borderRadius:10,fontSize:14,fontWeight:700,cursor:'pointer',
+                background:type===v?'white':'transparent',
+                color:type===v?(v==='expense'?'#dc2626':'#16a34a'):'#9CA3AF',
+                boxShadow:type===v?'0 1px 4px rgba(0,0,0,.1)':'none'}}>
                 {l}
               </button>
             ))}
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">תיאור</label>
-            <input type="text" required placeholder="לדוגמה: שופרסל, וולט, ארנונה..."
-                   className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-400"
-                   value={desc} onChange={e=>setDesc(e.target.value)} />
-            {preview&&<p className="mt-1.5 text-xs text-gray-500">קטגוריה: <span style={{color:preview.color}} className="font-semibold">{preview.emoji} {preview.category}</span></p>}
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">סכום (₪)</label>
-            <input type="number" required min="0.01" step="0.01" placeholder="0.00"
-                   className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-400"
-                   value={amount} onChange={e=>setAmount(e.target.value)} />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">חשבון</label>
-            <select className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-400"
-                    value={acct} onChange={e=>setAcct(e.target.value)}>
-              {ACCOUNTS.map(a=><option key={a.id} value={a.bank}>{a.bank} — {a.type}</option>)}
-            </select>
-          </div>
-          <button type="submit" className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 rounded-xl transition-colors">
-            הוסף עסקה ✓
-          </button>
-        </form>
+
+          <form onSubmit={submit} style={{display:'flex',flexDirection:'column',gap:16}}>
+            <div>
+              <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>תיאור</label>
+              <input className="input" placeholder="שופרסל, וולט, ארנונה..." value={desc}
+                     onChange={e=>setDesc(e.target.value)} required/>
+              {preview&&<p style={{fontSize:12,color:preview.color,marginTop:4,fontWeight:600}}>
+                {preview.emoji} {preview.cat}
+              </p>}
+            </div>
+            <div>
+              <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>סכום ₪</label>
+              <input className="input input-num" type="number" min="0.01" step="0.01"
+                     placeholder="0.00" value={amount} onChange={e=>setAmount(e.target.value)} required/>
+            </div>
+            <div>
+              <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>תאריך</label>
+              <input className="input" type="date" value={date} onChange={e=>setDate(e.target.value)}
+                     style={{direction:'ltr'}}/>
+            </div>
+            <button type="submit" className="btn-primary">הוסף ✓</button>
+          </form>
+        </div>
       </div>
     </div>
   );
 }
 
-/* ═══════════════════════════════════════════════════
-   MAIN APP
-═══════════════════════════════════════════════════ */
-function App() {
-  const [txs,setTxs]           = useState(INIT_TX);
-  const [showModal,setShowModal]= useState(false);
-  const [tab,setTab]            = useState('dashboard');
-  const [newId,setNewId]        = useState(null);
-  const [invTab,setInvTab]      = useState('keren');
+/* ── DASHBOARD ── */
+function Dashboard({profile,txs,onAdd}) {
+  const [showAdd,setShowAdd]=useState(false);
+  const net=profile.netSalary||0;
+  const budget=useMemo(()=>calcBudget(net),[net]);
+  const spent=useMemo(()=>spentPerBudget(txs,budget),[txs,budget]);
 
-  const cf      = useMemo(()=>calculateCashFlow(ACCOUNTS,txs,RECURRING,INCOME_SOURCES),[txs]);
-  const catData = useMemo(()=>expensesByCategory(txs),[txs]);
-  const sorted  = useMemo(()=>[...txs].sort((a,b)=>new Date(b.date)-new Date(a.date)),[txs]);
+  // Monthly totals
+  const now=new Date();
+  const thisMonth=txs.filter(t=>{const d=new Date(t.date);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();});
+  const monthIncome=thisMonth.filter(t=>t.amount>0).reduce((s,t)=>s+t.amount,0);
+  const monthSpent =Math.abs(thisMonth.filter(t=>t.amount<0).reduce((s,t)=>s+t.amount,0));
+  const safeToSpend=Math.max(0,net-monthSpent);
+  const spendColor=safeToSpend>net*.5?'#22C55E':safeToSpend>net*.2?'#F59E0B':'#EF4444';
 
-  function handleAdd(tx) {
-    const id=Date.now();
-    setTxs(prev=>[{...tx,id},...prev]);
-    setNewId(id);
-    setTimeout(()=>setNewId(null),2500);
-  }
+  const recent=[...txs].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,5);
 
-  const spendColor = cf.safeToSpend>5000?'#22C55E':cf.safeToSpend>1000?'#F59E0B':'#EF4444';
-  const overSpend  = cf.monthlyExpenses > cf.monthlyIncome;
-  const totalFixed = RECURRING.reduce((s,e)=>s+e.amount,0);
-
-  const TABS=[
-    {id:'dashboard',  label:'דשבורד',  emoji:'🏠'},
-    {id:'investments',label:'השקעות',  emoji:'💹'},
-    {id:'transactions',label:'עסקאות', emoji:'📋'},
-    {id:'accounts',   label:'חשבונות', emoji:'🏦'},
-    {id:'recurring',  label:'קבועים',  emoji:'🔄'},
-  ];
-  const INV_TABS=[
-    {id:'keren',     label:'קרן השתלמות', emoji:'📈'},
-    {id:'pension',   label:'פנסיה',       emoji:'🏛️'},
-    {id:'portfolio', label:'תיק מניות',   emoji:'📊'},
-  ];
+  // Donut for budget
+  const donutData=budget.map(b=>({name:b.key,value:b.amount,color:b.color,emoji:b.emoji}));
 
   return (
-    <div className="min-h-screen" style={{background:'#f0f4f8'}}>
-
-      {/* NAV */}
-      <header className="bg-white border-b border-gray-100 sticky top-0 z-40 shadow-sm">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span style={{fontSize:24}}>💎</span>
-            <div>
-              <p className="text-base font-extrabold text-gray-900" style={{lineHeight:1}}>FinanceIL</p>
-              <p className="text-xs text-gray-400">ניהול כספים חכם</p>
-            </div>
-          </div>
-          <p className="text-xs text-gray-400 text-left">
-            {new Intl.DateTimeFormat('he-IL',{weekday:'long',day:'numeric',month:'long'}).format(new Date())}
-          </p>
+    <div>
+      {/* Hero */}
+      <div style={{background:`linear-gradient(135deg,${spendColor},${spendColor}cc)`,
+                   padding:'28px 20px 32px',color:'white'}}>
+        <p style={{opacity:.8,fontSize:13,margin:'0 0 4px'}}>שלום {profile.name} 👋 · בטוח להוציא היום</p>
+        <p style={{fontSize:46,fontWeight:800,margin:'0 0 12px',lineHeight:1}}>{fmtILS(safeToSpend)}</p>
+        <div style={{display:'flex',gap:20,fontSize:13,opacity:.85}}>
+          <span>📥 הכנסה: {fmtILS(monthIncome||net)}</span>
+          <span>📤 הוצאות: {fmtILS(monthSpent)}</span>
         </div>
-        <div className="max-w-5xl mx-auto px-4 flex overflow-x-auto scrollbar-hide">
-          {TABS.map(t=>(
-            <button key={t.id} onClick={()=>setTab(t.id)}
-                    className={`px-3 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap flex-shrink-0 ${tab===t.id?'border-green-500 text-green-600':'border-transparent text-gray-500 hover:text-gray-700'}`}>
-              <span className="hidden sm:inline">{t.emoji} </span>{t.label}
-            </button>
-          ))}
+      </div>
+
+      <div style={{padding:'16px 16px 0',display:'flex',flexDirection:'column',gap:16}}>
+
+        {/* Budget overview */}
+        {net>0&&(
+          <div className="card" style={{padding:'16px'}}>
+            <p style={{fontSize:15,fontWeight:700,margin:'0 0 12px'}}>תקציב חודשי</p>
+            {budget.map(b=>{
+              const s=spent[b.key]||0;
+              const pct=Math.min(100,(s/b.amount)*100);
+              const over=s>b.amount;
+              return (
+                <div key={b.key} style={{marginBottom:12}}>
+                  <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                    <span style={{fontSize:13,color:'#374151'}}>{b.emoji} {b.key}</span>
+                    <span style={{fontSize:12,color:over?'#dc2626':'#6B7280'}}>
+                      {fmtILS(s)} / {fmtILS(b.amount)}
+                      {over&&<span className="tag-r" style={{marginRight:6}}>חריגה!</span>}
+                    </span>
+                  </div>
+                  <div style={{height:6,background:'#f3f4f6',borderRadius:3}}>
+                    <div style={{height:'100%',width:`${pct}%`,background:over?'#ef4444':b.color,borderRadius:3,transition:'width .5s'}}/>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Recent transactions */}
+        <div className="card" style={{overflow:'hidden'}}>
+          <div style={{padding:'14px 16px 0',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <p style={{fontSize:15,fontWeight:700,margin:0}}>עסקאות אחרונות</p>
+          </div>
+          {recent.length===0
+            ? <p style={{textAlign:'center',color:'#9CA3AF',padding:'24px',fontSize:14}}>אין עסקאות עדיין — ייבא קובץ אקסל או הוסף ידנית</p>
+            : recent.map(tx=><TxRow key={tx.id} tx={tx}/>)
+          }
         </div>
-      </header>
-
-      <main className="max-w-5xl mx-auto px-4 py-6" style={{paddingBottom:100}}>
-
-        {/* ══ DASHBOARD ══ */}
-        {tab==='dashboard' && (
-          <div className="space-y-5">
-            {/* Net Worth */}
-            <NetWorthCard bankTotal={cf.totalBalance} />
-
-            {/* Safe to Spend */}
-            <div className="rounded-2xl p-6 text-white"
-                 style={{background:`linear-gradient(135deg,${spendColor} 0%,${spendColor}bb 100%)`,
-                         boxShadow:`0 0 40px ${spendColor}44`}}>
-              <p className="text-sm font-medium mb-1" style={{opacity:.8}}>בטוח להוציא היום</p>
-              <p className="font-extrabold mb-3" style={{fontSize:48,lineHeight:1.1,letterSpacing:'-1px'}}>{fmtILS(cf.safeToSpend)}</p>
-              <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm" style={{opacity:.85}}>
-                <span>💳 יתרה נזילה: {fmtILS(cf.liquidBalance)}</span>
-                <span>📅 {cf.daysRemaining} ימים לסוף חודש</span>
-              </div>
-              {(cf.upcomingExp>0||cf.upcomingInc>0) && (
-                <div className="mt-3 rounded-xl p-3 text-xs space-y-0.5" style={{background:'rgba(255,255,255,.2)'}}>
-                  {cf.upcomingExp>0 && <p>⚠️ צפוי לנכות: <strong>{fmtILS(cf.upcomingExp)}</strong> בהוצאות קבועות</p>}
-                  {cf.upcomingInc>0 && <p>✅ צפוי להיכנס: <strong>{fmtILS(cf.upcomingInc)}</strong> (משכורת)</p>}
-                </div>
-              )}
-            </div>
-
-            {/* Stats */}
-            <div className="grid grid-cols-3 gap-3">
-              {[
-                {label:'יתרה בנקאית', val:cf.totalBalance,    cls:cf.totalBalance>=0?'text-gray-800':'text-red-500'},
-                {label:'הכנסות חודש', val:cf.monthlyIncome,   cls:'text-green-600'},
-                {label:'הוצאות חודש', val:cf.monthlyExpenses, cls:overSpend?'text-red-500':'text-orange-500'},
-              ].map(s=>(
-                <div key={s.label} className="bg-white rounded-xl p-4 border border-gray-100 text-center card-lift">
-                  <p className="text-xs text-gray-400 mb-1" style={{lineHeight:1.3}}>{s.label}</p>
-                  <p className={`text-base font-bold ${s.cls}`}>{fmtILS(s.val)}</p>
-                </div>
-              ))}
-            </div>
-
-            {overSpend && (
-              <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex gap-3 items-start">
-                <span style={{fontSize:22}}>⚠️</span>
-                <div>
-                  <p className="text-sm font-bold text-red-700">הוצאות עולות על הכנסות החודש!</p>
-                  <p className="text-xs text-red-500 mt-0.5">גרעון של {fmtILS(cf.monthlyExpenses-cf.monthlyIncome)}</p>
-                </div>
-              </div>
-            )}
-
-            {/* Two-col */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-                <div className="flex items-center justify-between p-4 border-b border-gray-100">
-                  <h2 className="text-sm font-bold text-gray-900">עסקאות אחרונות</h2>
-                  <button onClick={()=>setTab('transactions')} className="text-xs text-green-600 font-medium">הכל ›</button>
-                </div>
-                <div className="p-2">
-                  {sorted.slice(0,7).map(tx=><TxRow key={tx.id} tx={tx} isNew={tx.id===newId}/>)}
-                </div>
-              </div>
-              <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-                <div className="p-4 border-b border-gray-100">
-                  <h2 className="text-sm font-bold text-gray-900">הוצאות לפי קטגוריה</h2>
-                  <p className="text-xs text-gray-400 mt-0.5">החודש הנוכחי</p>
-                </div>
-                <div className="p-4"><DonutChart data={catData}/></div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ══ INVESTMENTS TAB ══ */}
-        {tab==='investments' && (
-          <div className="space-y-5">
-            {/* Sub-tabs */}
-            <div className="flex bg-white rounded-2xl p-1 gap-1 border border-gray-100 shadow-sm">
-              {INV_TABS.map(t=>(
-                <button key={t.id} onClick={()=>setInvTab(t.id)}
-                        className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-all ${invTab===t.id?'bg-green-500 text-white shadow-sm':'text-gray-500 hover:text-gray-700'}`}>
-                  {t.emoji} {t.label}
-                </button>
-              ))}
-            </div>
-            {invTab==='keren'     && <KerenCard />}
-            {invTab==='pension'   && <PensionCard />}
-            {invTab==='portfolio' && <StockPortfolio />}
-          </div>
-        )}
-
-        {/* ══ TRANSACTIONS ══ */}
-        {tab==='transactions' && (
-          <div className="bg-white rounded-2xl border border-gray-100">
-            <div className="p-4 border-b border-gray-100 flex items-center justify-between">
-              <h2 className="font-bold text-gray-900">כל העסקאות</h2>
-              <span className="text-xs text-gray-400">{txs.length} עסקאות</span>
-            </div>
-            <div className="p-2">{sorted.map(tx=><TxRow key={tx.id} tx={tx} isNew={tx.id===newId}/>)}</div>
-          </div>
-        )}
-
-        {/* ══ ACCOUNTS ══ */}
-        {tab==='accounts' && (
-          <div className="space-y-4">
-            <div className="rounded-2xl p-6 text-white" style={{background:'linear-gradient(135deg,#1e293b,#334155)'}}>
-              <p className="text-sm mb-1" style={{opacity:.7}}>יתרה כוללת</p>
-              <p className="font-extrabold" style={{fontSize:40}}>{fmtILS(cf.totalBalance)}</p>
-            </div>
-            {ACCOUNTS.map(a=><AccCard key={a.id} acc={a}/>)}
-          </div>
-        )}
-
-        {/* ══ RECURRING ══ */}
-        {tab==='recurring' && (
-          <div className="space-y-4">
-            <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-              <div className="p-4 border-b border-gray-100">
-                <h2 className="font-bold text-gray-900">הוצאות קבועות</h2>
-                <p className="text-xs text-gray-400">{fmtILS(totalFixed)} / חודש</p>
-              </div>
-              {RECURRING.map(e=>(
-                <div key={e.id} className="flex items-center gap-3 p-4 border-b border-gray-50 last:border-0">
-                  <span style={{fontSize:22}}>{e.emoji}</span>
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-gray-800">{e.name}</p>
-                    <p className="text-xs text-gray-400">כל ה-{e.dueDay} לחודש</p>
-                  </div>
-                  <span className="text-sm font-bold text-red-500">−{fmtILS(e.amount)}</span>
-                </div>
-              ))}
-            </div>
-            <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
-              <div className="p-4 border-b border-gray-100"><h2 className="font-bold text-gray-900">הכנסות קבועות</h2></div>
-              {INCOME_SOURCES.map(i=>(
-                <div key={i.id} className="flex items-center gap-3 p-4">
-                  <span style={{fontSize:22}}>{i.emoji}</span>
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-gray-800">{i.name}</p>
-                    <p className="text-xs text-gray-400">כל ה-{i.dueDay} לחודש</p>
-                  </div>
-                  <span className="text-sm font-bold text-green-600">+{fmtILS(i.amount)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </main>
+      </div>
 
       {/* FAB */}
-      <div style={{position:'fixed',bottom:24,left:'50%',transform:'translateX(-50%)',zIndex:40}}>
-        <button onClick={()=>setShowModal(true)}
-                style={{background:'#22C55E',color:'white',fontWeight:700,borderRadius:50,
-                        padding:'14px 28px',fontSize:14,border:'none',cursor:'pointer',
-                        boxShadow:'0 8px 24px rgba(34,197,94,.4)',whiteSpace:'nowrap'}}>
-          ➕ הוסף עסקה
+      <button onClick={()=>setShowAdd(true)} style={{
+        position:'fixed',bottom:84,left:20,width:56,height:56,borderRadius:'50%',
+        background:'#22C55E',color:'white',fontSize:28,border:'none',cursor:'pointer',
+        boxShadow:'0 4px 20px rgba(34,197,94,.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:40}}>
+        +
+      </button>
+
+      {showAdd&&<AddModal onClose={()=>setShowAdd(false)} onAdd={tx=>{onAdd(tx);setShowAdd(false);}}/>}
+    </div>
+  );
+}
+
+/* ── TRANSACTIONS TAB ── */
+function TransactionsTab({txs,onAdd,onDelete}) {
+  const [showAdd,setShowAdd]=useState(false);
+  const [search,setSearch]=useState('');
+  const [filter,setFilter]=useState('all');
+
+  const filtered=useMemo(()=>{
+    let list=[...txs].sort((a,b)=>new Date(b.date)-new Date(a.date));
+    if(search) list=list.filter(t=>t.description.toLowerCase().includes(search.toLowerCase())||t.cat.includes(search));
+    if(filter==='income')  list=list.filter(t=>t.amount>0);
+    if(filter==='expense') list=list.filter(t=>t.amount<0);
+    return list;
+  },[txs,search,filter]);
+
+  return (
+    <div>
+      {/* Search */}
+      <div style={{padding:'12px 16px',background:'white',borderBottom:'1px solid #f3f4f6'}}>
+        <input className="input" placeholder="🔍 חיפוש..." value={search}
+               onChange={e=>setSearch(e.target.value)}
+               style={{marginBottom:10}}/>
+        <div style={{display:'flex',gap:8}}>
+          {[['all','הכל'],['income','הכנסות'],['expense','הוצאות']].map(([v,l])=>(
+            <button key={v} onClick={()=>setFilter(v)} style={{
+              padding:'6px 14px',border:'none',borderRadius:20,fontSize:13,fontWeight:600,cursor:'pointer',
+              background:filter===v?'#22C55E':'#f3f4f6',color:filter===v?'white':'#6B7280'}}>
+              {l}
+            </button>
+          ))}
+          <span style={{marginRight:'auto',fontSize:12,color:'#9CA3AF',lineHeight:'30px'}}>{filtered.length} עסקאות</span>
+        </div>
+      </div>
+
+      <div className="card" style={{borderRadius:0,border:'none',borderTop:'1px solid #e5e7eb'}}>
+        {filtered.length===0
+          ? <p style={{textAlign:'center',color:'#9CA3AF',padding:'40px',fontSize:14}}>אין עסקאות</p>
+          : filtered.map(tx=><TxRow key={tx.id} tx={tx}/>)
+        }
+      </div>
+
+      <button onClick={()=>setShowAdd(true)} style={{
+        position:'fixed',bottom:84,left:20,width:56,height:56,borderRadius:'50%',
+        background:'#22C55E',color:'white',fontSize:28,border:'none',cursor:'pointer',
+        boxShadow:'0 4px 20px rgba(34,197,94,.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:40}}>
+        +
+      </button>
+      {showAdd&&<AddModal onClose={()=>setShowAdd(false)} onAdd={tx=>{onAdd(tx);setShowAdd(false);}}/>}
+    </div>
+  );
+}
+
+/* ── EXCEL IMPORT ── */
+function ImportTab({onImport}) {
+  const [stage,setStage]=useState('upload'); // upload | map | preview | done
+  const [rows,setRows]=useState([]);
+  const [cols,setCols]=useState({date:-1,desc:-1,debit:-1,credit:-1,amount:-1});
+  const [preview,setPreview]=useState([]);
+  const [importing,setImporting]=useState(false);
+  const [err,setErr]=useState(null);
+  const fileRef=useRef();
+
+  async function handleFile(file) {
+    setErr(null);
+    try {
+      const buf=await file.arrayBuffer();
+      const wb=XLSX.read(buf,{type:'array',cellDates:true});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const data=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+      const clean=data.filter(r=>r.some(c=>String(c).trim()!==''));
+      setRows(clean);
+      // auto-detect columns
+      const hdr=clean[0].map(c=>String(c).toLowerCase().trim());
+      const find=(...terms)=>hdr.findIndex(h=>terms.some(t=>h.includes(t)));
+      setCols({
+        date:   find('תאריך','date'),
+        desc:   find('תיאור','פירוט','שם','description'),
+        debit:  find('חיוב','הוצאה','debit'),
+        credit: find('זכות','הכנסה','credit'),
+        amount: find('סכום','amount'),
+      });
+      setStage('map');
+    } catch(e) { setErr('שגיאה בקריאת הקובץ: '+e.message); }
+  }
+
+  function buildPreview() {
+    const parsed=[];
+    for(let i=1;i<rows.length;i++){
+      const row=rows[i];
+      let amount=0;
+      if(cols.amount>=0) {
+        amount=parseFloat(String(row[cols.amount]).replace(/[^\d.-]/g,''))||0;
+      } else {
+        const cr=parseFloat(String(row[cols.credit]||'').replace(/[^\d.-]/g,''))||0;
+        const db=parseFloat(String(row[cols.debit]||'').replace(/[^\d.-]/g,''))||0;
+        amount=cr>0?cr:(db>0?-db:0);
+      }
+      const rawDate=row[cols.date];
+      let date;
+      if(rawDate instanceof Date) date=rawDate.toISOString().split('T')[0];
+      else {
+        const d=new Date(rawDate);
+        date=isNaN(d)?new Date().toISOString().split('T')[0]:d.toISOString().split('T')[0];
+      }
+      const desc=String(row[cols.desc]||'').trim();
+      if(!desc||amount===0) continue;
+      const cat=categorize(desc);
+      parsed.push({id:Date.now()+i,description:desc,amount:Math.round(amount*100)/100,
+                   date,cat:cat.cat,color:cat.color,emoji:cat.emoji,account:'ייבוא'});
+    }
+    setPreview(parsed);
+    setStage('preview');
+  }
+
+  function confirmImport(){
+    onImport(preview);
+    setStage('done');
+  }
+
+  const hdrRow=rows[0]||[];
+
+  return (
+    <div style={{padding:16,display:'flex',flexDirection:'column',gap:16}}>
+
+      {stage==='upload'&&(
+        <div>
+          <div className="card" style={{padding:32,textAlign:'center'}}>
+            <div style={{fontSize:48,marginBottom:12}}>📥</div>
+            <p style={{fontSize:18,fontWeight:700,marginBottom:8}}>ייבא קובץ עסקאות</p>
+            <p style={{fontSize:13,color:'#6B7280',marginBottom:24,lineHeight:1.6}}>
+              מבנק הפועלים, לאומי, דיסקונט, Max ועוד.<br/>
+              Excel (xlsx/xls) או CSV
+            </p>
+            <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv"
+                   style={{display:'none'}} onChange={e=>e.target.files[0]&&handleFile(e.target.files[0])}/>
+            <button className="btn-primary" onClick={()=>fileRef.current.click()}>
+              📂 בחר קובץ
+            </button>
+            {/* Drag area */}
+            <div onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#22C55E';}}
+                 onDragLeave={e=>{e.currentTarget.style.borderColor='#e5e7eb';}}
+                 onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#e5e7eb';
+                             e.dataTransfer.files[0]&&handleFile(e.dataTransfer.files[0]);}}
+                 style={{border:'2px dashed #e5e7eb',borderRadius:14,padding:24,marginTop:16,
+                         color:'#9CA3AF',fontSize:13,transition:'border-color .2s'}}>
+              או גרור קובץ לכאן
+            </div>
+          </div>
+          {err&&<p style={{color:'#dc2626',fontSize:13,textAlign:'center'}}>{err}</p>}
+
+          <div className="card" style={{padding:16}}>
+            <p style={{fontSize:13,fontWeight:700,marginBottom:8}}>📋 איך להוריד קובץ מהבנק?</p>
+            {[
+              {bank:'בנק הפועלים',steps:'כניסה ← תנועות בחשבון ← ייצוא ← Excel'},
+              {bank:'בנק לאומי',steps:'לאומי Online ← תנועות ← ייצוא ← Excel'},
+              {bank:'Max',steps:'max.co.il ← עסקאות ← הורד דוח ← Excel'},
+            ].map(b=>(
+              <div key={b.bank} style={{borderBottom:'1px solid #f3f4f6',padding:'8px 0',fontSize:12}}>
+                <span style={{fontWeight:600,color:'#374151'}}>{b.bank}: </span>
+                <span style={{color:'#6B7280'}}>{b.steps}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {stage==='map'&&(
+        <div>
+          <p style={{fontSize:17,fontWeight:700,margin:'0 0 4px'}}>🗂️ מיפוי עמודות</p>
+          <p style={{fontSize:13,color:'#6B7280',marginBottom:16}}>בחר איזו עמודה מכילה כל נתון:</p>
+
+          {/* Preview of first 3 rows */}
+          <div className="card" style={{overflowX:'auto',marginBottom:16}}>
+            <table style={{fontSize:11,borderCollapse:'collapse',width:'100%'}}>
+              <thead>
+                <tr style={{background:'#f9fafb'}}>
+                  {hdrRow.map((h,i)=><th key={i} style={{padding:'6px 8px',borderBottom:'1px solid #e5e7eb',textAlign:'right',whiteSpace:'nowrap',fontWeight:700,color:'#374151'}}>{String(h)}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.slice(1,4).map((r,i)=>(
+                  <tr key={i} style={{borderBottom:'1px solid #f3f4f6'}}>
+                    {r.map((c,j)=><td key={j} style={{padding:'6px 8px',color:'#6B7280',whiteSpace:'nowrap'}}>{String(c).slice(0,20)}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Column selectors */}
+          <div className="card" style={{padding:16,display:'flex',flexDirection:'column',gap:14}}>
+            {[
+              {key:'date',label:'📅 תאריך'},
+              {key:'desc',label:'📝 תיאור עסקה'},
+              {key:'amount',label:'💰 סכום (עמודה אחת)'},
+              {key:'debit',label:'📤 חיוב / הוצאה'},
+              {key:'credit',label:'📥 זכות / הכנסה'},
+            ].map(f=>(
+              <div key={f.key} style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <label style={{fontSize:13,fontWeight:600,color:'#374151'}}>{f.label}</label>
+                <select value={cols[f.key]} onChange={e=>setCols(c=>({...c,[f.key]:parseInt(e.target.value)}))}
+                        style={{border:'1px solid #e5e7eb',borderRadius:8,padding:'6px 10px',fontSize:13,background:'white',minWidth:130}}>
+                  <option value={-1}>— לא רלוונטי</option>
+                  {hdrRow.map((h,i)=><option key={i} value={i}>{String(h)||`עמודה ${i+1}`}</option>)}
+                </select>
+              </div>
+            ))}
+          </div>
+
+          <div style={{display:'flex',gap:12,marginTop:16}}>
+            <button className="btn-secondary" onClick={()=>setStage('upload')} style={{width:'auto',padding:'14px 20px'}}>← חזור</button>
+            <button className="btn-primary" onClick={buildPreview}
+                    disabled={cols.desc<0||(cols.amount<0&&(cols.debit<0&&cols.credit<0))||cols.date<0}>
+              תצוגה מקדימה →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {stage==='preview'&&(
+        <div>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+            <div>
+              <p style={{fontSize:17,fontWeight:700,margin:0}}>✅ תצוגה מקדימה</p>
+              <p style={{fontSize:13,color:'#6B7280',margin:'2px 0 0'}}>{preview.length} עסקאות זוהו</p>
+            </div>
+            <button className="btn-secondary" onClick={()=>setStage('map')} style={{width:'auto',padding:'8px 14px',fontSize:13}}>← חזור</button>
+          </div>
+
+          <div className="card" style={{overflow:'hidden',marginBottom:16}}>
+            {preview.slice(0,20).map(tx=><TxRow key={tx.id} tx={tx}/>)}
+            {preview.length>20&&<p style={{textAlign:'center',fontSize:12,color:'#9CA3AF',padding:12}}>ועוד {preview.length-20} עסקאות...</p>}
+          </div>
+
+          <button className="btn-primary" onClick={confirmImport}>
+            ייבא {preview.length} עסקאות ←
+          </button>
+        </div>
+      )}
+
+      {stage==='done'&&(
+        <div className="card" style={{padding:40,textAlign:'center'}}>
+          <div style={{fontSize:60,marginBottom:16}}>🎉</div>
+          <p style={{fontSize:20,fontWeight:800,marginBottom:8}}>הייבוא הושלם!</p>
+          <p style={{fontSize:14,color:'#6B7280',marginBottom:24}}>{preview.length} עסקאות יובאו בהצלחה</p>
+          <button className="btn-primary" onClick={()=>setStage('upload')}>ייבא קובץ נוסף</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── INVESTMENTS TAB ── */
+function InvestmentsTab({profile}) {
+  const stored=lsGet(LS.INV,{});
+  const [kVal,setKVal]=useState(stored.kerenValue??0);
+  const [pVal,setPVal]=useState(stored.pensionValue??0);
+  const [kEdit,setKEdit]=useState(false);
+  const [pEdit,setPEdit]=useState(false);
+  const [kTmp,setKTmp]=useState('');
+  const [pTmp,setPTmp]=useState('');
+  const gross=profile.grossSalary||0;
+  const kerenMonthly=gross*(profile.kerenEmp+profile.kerenEr)/100;
+  const pensionMonthly=gross*(profile.pensionEmp+profile.pensionEr)/100;
+
+  function saveKeren(){const v=parseFloat(kTmp);if(v>0){setKVal(v);lsSet(LS.INV,{...lsGet(LS.INV,{}),kerenValue:v});}setKEdit(false);}
+  function savePension(){const v=parseFloat(pTmp);if(v>0){setPVal(v);lsSet(LS.INV,{...lsGet(LS.INV,{}),pensionValue:v});}setPEdit(false);}
+
+  const cards=[
+    {
+      title:'קרן השתלמות',emoji:'📈',value:kVal,monthly:kerenMonthly,
+      show:profile.hasKeren,color:'#1e3a5f',light:'#eff6ff',tc:'#1e40af',
+      editing:kEdit,startEdit:()=>{setKTmp(kVal||'');setKEdit(true);},
+      tmp:kTmp,setTmp:setKTmp,save:saveKeren,cancel:()=>setKEdit(false),
+      hint:'עדכן מ-gemel.co.il',
+    },
+    {
+      title:'פנסיה',emoji:'🏛️',value:pVal,monthly:pensionMonthly,
+      show:profile.hasPension,color:'#4a1942',light:'#f5f3ff',tc:'#6d28d9',
+      editing:pEdit,startEdit:()=>{setPTmp(pVal||'');setPEdit(true);},
+      tmp:pTmp,setTmp:setPTmp,save:savePension,cancel:()=>setPEdit(false),
+      hint:'עדכן מ-pension.mof.gov.il',
+    },
+  ];
+
+  if(!profile.hasKeren&&!profile.hasPension)
+    return <div style={{padding:40,textAlign:'center',color:'#9CA3AF',fontSize:15}}>
+      לא הוגדרו קרנות בהגדרה הראשונית
+    </div>;
+
+  return (
+    <div style={{padding:16,display:'flex',flexDirection:'column',gap:16}}>
+      {cards.filter(c=>c.show).map(c=>(
+        <div key={c.title} className="card" style={{overflow:'hidden'}}>
+          <div style={{background:`linear-gradient(135deg,${c.color},${c.color}cc)`,padding:'16px 20px',
+                       display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <div style={{color:'white'}}>
+              <p style={{margin:0,fontSize:16,fontWeight:700}}>{c.emoji} {c.title}</p>
+              <p style={{margin:'4px 0 0',fontSize:12,opacity:.7}}>הפקדה חודשית: {fmtILS(c.monthly)}</p>
+            </div>
+            <div style={{textAlign:'left',color:'white'}}>
+              <p style={{margin:0,fontSize:22,fontWeight:800}}>{c.value>0?fmtILS(c.value):'—'}</p>
+              <p style={{margin:'2px 0 0',fontSize:11,opacity:.6}}>שווי נוכחי</p>
+            </div>
+          </div>
+          <div style={{padding:16}}>
+            {c.editing?(
+              <div style={{display:'flex',gap:10,alignItems:'flex-end'}}>
+                <div style={{flex:1}}>
+                  <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>שווי נוכחי ₪</label>
+                  <input className="input input-num" type="number" value={c.tmp}
+                         onChange={e=>c.setTmp(e.target.value)} placeholder="0" autoFocus/>
+                </div>
+                <button onClick={c.save} className="btn-primary" style={{width:'auto',padding:'13px 18px'}}>שמור</button>
+                <button onClick={c.cancel} className="btn-secondary" style={{width:'auto',padding:'13px 14px'}}>ביטול</button>
+              </div>
+            ):(
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <p style={{fontSize:12,color:'#9CA3AF',margin:0}}>💡 {c.hint}</p>
+                <button onClick={c.startEdit} style={{border:'none',background:c.light,color:c.tc,
+                  borderRadius:8,padding:'7px 14px',fontSize:13,fontWeight:700,cursor:'pointer'}}>
+                  ✏️ עדכן
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
+
+      <div className="card" style={{padding:16}}>
+        <p style={{fontSize:13,fontWeight:700,marginBottom:12}}>📊 סיכום חיסכון חודשי</p>
+        {gross>0?[
+          {label:`קרן השתלמות (${profile.kerenEmp}%+${profile.kerenEr}%)`,val:kerenMonthly,show:profile.hasKeren},
+          {label:`פנסיה (${profile.pensionEmp}%+${profile.pensionEr}%)`,val:pensionMonthly,show:profile.hasPension},
+        ].filter(r=>r.show).map(r=>(
+          <div key={r.label} style={{display:'flex',justifyContent:'space-between',padding:'8px 0',
+               borderBottom:'1px solid #f3f4f6',fontSize:13}}>
+            <span style={{color:'#374151'}}>{r.label}</span>
+            <span style={{fontWeight:700}}>{fmtILS(r.val)}</span>
+          </div>
+        )):<p style={{fontSize:13,color:'#9CA3AF'}}>הזן שכר ברוטו בהגדרות לחישוב</p>}
+      </div>
+    </div>
+  );
+}
+
+/* ── SETTINGS TAB ── */
+function SettingsTab({profile,onReset,onProfileUpdate}) {
+  const [p,setP]=useState({...profile});
+  const [saved,setSaved]=useState(false);
+  const set=(k,v)=>setP(prev=>({...prev,[k]:v}));
+
+  function save(){
+    lsSet(LS.PROFILE,p);
+    onProfileUpdate(p);
+    setSaved(true);
+    setTimeout(()=>setSaved(false),2000);
+  }
+
+  return (
+    <div style={{padding:16,display:'flex',flexDirection:'column',gap:16}}>
+      <div className="card" style={{padding:20}}>
+        <p style={{fontSize:16,fontWeight:700,marginBottom:16}}>👤 פרופיל</p>
+        <div style={{marginBottom:14}}>
+          <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>שם</label>
+          <input className="input" value={p.name} onChange={e=>set('name',e.target.value)}/>
+        </div>
+        <div style={{marginBottom:14}}>
+          <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>שכר נטו ₪</label>
+          <input className="input input-num" type="number" value={p.netSalary} onChange={e=>set('netSalary',parseFloat(e.target.value)||0)}/>
+        </div>
+        <div style={{marginBottom:14}}>
+          <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>שכר ברוטו ₪</label>
+          <input className="input input-num" type="number" value={p.grossSalary} onChange={e=>set('grossSalary',parseFloat(e.target.value)||0)}/>
+        </div>
+        <button className="btn-primary" onClick={save}>
+          {saved?'✓ נשמר!':'שמור שינויים'}
         </button>
       </div>
 
-      {showModal && <AddModal onClose={()=>setShowModal(false)} onAdd={handleAdd}/>}
+      <div className="card" style={{padding:20,borderColor:'#fee2e2'}}>
+        <p style={{fontSize:15,fontWeight:700,color:'#dc2626',marginBottom:8}}>⚠️ איפוס נתונים</p>
+        <p style={{fontSize:13,color:'#6B7280',marginBottom:16}}>ימחק את כל העסקאות וההגדרות ויחזיר לאפס</p>
+        <button onClick={()=>{if(confirm('האם אתה בטוח? לא ניתן לשחזר את הנתונים.'))onReset();}}
+                style={{border:'2px solid #dc2626',background:'white',color:'#dc2626',borderRadius:12,
+                        padding:'12px',fontSize:14,fontWeight:700,cursor:'pointer',width:'100%'}}>
+          🗑️ מחק הכל והתחל מחדש
+        </button>
+      </div>
     </div>
   );
 }
 
-document.getElementById('loading').style.display='none';
+/* ── BOTTOM NAV ── */
+function BottomNav({tab,setTab}) {
+  const tabs=[
+    {id:'dashboard',  label:'בית',     emoji:'🏠'},
+    {id:'transactions',label:'עסקאות', emoji:'💳'},
+    {id:'import',     label:'ייבוא',   emoji:'📥'},
+    {id:'investments',label:'השקעות',  emoji:'💹'},
+    {id:'settings',   label:'הגדרות',  emoji:'⚙️'},
+  ];
+  return (
+    <nav className="bottom-nav" style={{
+      position:'fixed',bottom:0,left:0,right:0,background:'white',
+      borderTop:'1px solid #e5e7eb',display:'flex',zIndex:50,
+      boxShadow:'0 -2px 16px rgba(0,0,0,.06)'}}>
+      {tabs.map(t=>(
+        <button key={t.id} onClick={()=>setTab(t.id)} style={{
+          flex:1,padding:'10px 2px 8px',border:'none',background:'none',cursor:'pointer',
+          display:'flex',flexDirection:'column',alignItems:'center',gap:2,
+          color:tab===t.id?'#22C55E':'#9CA3AF',transition:'color .15s'}}>
+          <span style={{fontSize:22,lineHeight:1}}>{t.emoji}</span>
+          <span style={{fontSize:10,fontWeight:tab===t.id?700:500}}>{t.label}</span>
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+/* ── APP ROOT ── */
+function App() {
+  const [done,setDone]       = useState(()=>lsGet(LS.DONE,false));
+  const [profile,setProfile] = useState(()=>lsGet(LS.PROFILE,null));
+  const [txs,setTxs]         = useState(()=>lsGet(LS.TX,[]));
+  const [tab,setTab]         = useState('dashboard');
+
+  useEffect(()=>{ lsSet(LS.TX,txs); },[txs]);
+
+  function handleAdd(tx)  { setTxs(p=>[tx,...p]); }
+  function handleImport(newTxs) { setTxs(p=>[...newTxs,...p]); }
+  function handleReset()  { lsClear(); setDone(false); setProfile(null); setTxs([]); }
+
+  if (!done||!profile) {
+    return <Onboarding onDone={p=>{setProfile(p);setDone(true);}}/>;
+  }
+
+  return (
+    <div style={{maxWidth:500,margin:'0 auto',minHeight:'100vh',background:'#f0f4f8'}}>
+      {/* Page title bar */}
+      <div style={{background:'white',borderBottom:'1px solid #e5e7eb',padding:'14px 20px',
+                   position:'sticky',top:0,zIndex:30}}>
+        <div style={{display:'flex',alignItems:'center',gap:10}}>
+          <span style={{fontSize:22}}>💎</span>
+          <div>
+            <p style={{margin:0,fontSize:15,fontWeight:800,lineHeight:1}}>FinanceIL</p>
+            <p style={{margin:0,fontSize:11,color:'#9CA3AF'}}>
+              {new Intl.DateTimeFormat('he-IL',{month:'long',year:'numeric'}).format(new Date())}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="main-content">
+        {tab==='dashboard'   && <Dashboard     profile={profile} txs={txs} onAdd={handleAdd}/>}
+        {tab==='transactions'&& <TransactionsTab txs={txs} onAdd={handleAdd}/>}
+        {tab==='import'      && <ImportTab      onImport={handleImport}/>}
+        {tab==='investments' && <InvestmentsTab profile={profile}/>}
+        {tab==='settings'    && <SettingsTab    profile={profile} onReset={handleReset} onProfileUpdate={p=>{setProfile(p);lsSet(LS.PROFILE,p);}}/>}
+      </div>
+
+      <BottomNav tab={tab} setTab={setTab}/>
+    </div>
+  );
+}
+
+document.getElementById('loading')&&(document.getElementById('loading').style.display='none');
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
 </body>
