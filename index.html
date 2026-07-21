@@ -131,6 +131,63 @@ const fmtDate = s => {
   return new Intl.DateTimeFormat('he-IL',{day:'numeric',month:'short'}).format(d);
 };
 
+/* ── AUTO-SALARY LOGIC ── */
+const LS_SALARY_MONTHS = 'fil_sal_months';
+
+/**
+ * Check if today >= salaryDay and salary not yet added for this month.
+ * Returns the new transaction if it was added, null otherwise.
+ */
+function checkAutoSalary(profile, txs) {
+  const net = profile.netSalary;
+  const day = profile.salaryDay;
+  if (!net || !day) return null;
+
+  const now   = new Date();
+  const today = now.getDate();
+  if (today < day) return null; // salary day not reached yet
+
+  const mk = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+  const done = lsGet(LS_SALARY_MONTHS, []);
+  if (done.includes(mk)) return null; // already added this month
+
+  // Check if a salary tx already exists this month (manual or imported)
+  const alreadyHas = txs.some(t => {
+    const d = new Date(t.date);
+    return d.getMonth()===now.getMonth() && d.getFullYear()===now.getFullYear()
+           && t.amount > 0 && (t.cat==='הכנסה' || t.description.includes('משכורת'));
+  });
+  if (alreadyHas) {
+    lsSet(LS_SALARY_MONTHS, [...done, mk]);
+    return null;
+  }
+
+  const salDate = new Date(now.getFullYear(), now.getMonth(), day);
+  const dateStr = salDate.toISOString().split('T')[0];
+  const cat = categorize('משכורת');
+  const tx = {
+    id: Date.now(),
+    description: `משכורת — ${new Intl.DateTimeFormat('he-IL',{month:'long',year:'numeric'}).format(now)}`,
+    amount: Math.round(net * 100) / 100,
+    date: dateStr,
+    cat: cat.cat, color: cat.color, emoji: cat.emoji,
+    account: 'אוטומטי',
+    auto: true,
+  };
+  lsSet(LS_SALARY_MONTHS, [...done, mk]);
+  return tx;
+}
+
+/** Days until the next occurrence of `targetDay` in the month cycle */
+function daysUntil(targetDay) {
+  const now   = new Date();
+  const today = now.getDate();
+  if (targetDay > today) return targetDay - today;
+  // already passed this month → count to next month
+  const nextMonth = new Date(now.getFullYear(), now.getMonth()+1, targetDay);
+  return Math.ceil((nextMonth - now) / 864e5);
+}
+
 /* ── SVG DONUT ── */
 function DonutChart({data,size=180,cx_label='',cx_val=''}) {
   const [hov,setHov]=useState(null);
@@ -178,6 +235,7 @@ function Onboarding({onDone}) {
   const STEPS=6;
   const [d,setD]=useState({
     name:'', netSalary:'', grossSalary:'',
+    salaryDay:10, creditDay:1,
     hasKeren:true, kerenEmp:2.5, kerenEr:7.5,
     hasPension:true, pensionEmp:6, pensionEr:14.83, pensionProvider:'',
     bankBalance:'', creditDebt:'',
@@ -252,18 +310,47 @@ function Onboarding({onDone}) {
 
           {step===2 && (
             <div>
-              <p style={{fontSize:22,fontWeight:800,color:'#111',marginBottom:6}}>💰 כמה אתה מרוויח?</p>
-              <p style={{fontSize:14,color:'#6B7280',marginBottom:24}}>נשתמש בזה לחישוב תקציב חכם</p>
-              <div style={{marginBottom:16}}>
+              <p style={{fontSize:22,fontWeight:800,color:'#111',marginBottom:6}}>💰 פרטי שכר ואשראי</p>
+              <p style={{fontSize:14,color:'#6B7280',marginBottom:20}}>נשתמש בזה לתקציב ולמעקב אוטומטי</p>
+
+              <div style={{marginBottom:14}}>
                 <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>שכר נטו (לאחר ניכויים) ₪</label>
                 <input className="input input-num" type="number" placeholder="14000" value={d.netSalary}
                        onChange={e=>set('netSalary',e.target.value)}/>
                 <p style={{fontSize:11,color:'#9CA3AF',marginTop:4}}>הסכום שנכנס לחשבון הבנק בפועל</p>
               </div>
-              <div>
+
+              <div style={{marginBottom:14}}>
                 <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>שכר ברוטו ₪ <span style={{color:'#9CA3AF',fontWeight:400}}>(אופציונלי)</span></label>
                 <input className="input input-num" type="number" placeholder="18000" value={d.grossSalary}
                        onChange={e=>set('grossSalary',e.target.value)}/>
+              </div>
+
+              <div style={{background:'#f0fdf4',borderRadius:14,padding:14,display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+                <div>
+                  <label style={{display:'block',fontSize:13,fontWeight:700,color:'#15803d',marginBottom:6}}>
+                    📅 יום כניסת משכורת
+                  </label>
+                  <input className="input input-num" type="number" min="1" max="31" placeholder="10"
+                         value={d.salaryDay} onChange={e=>set('salaryDay',parseInt(e.target.value)||10)}/>
+                  <p style={{fontSize:11,color:'#15803d',marginTop:4}}>לדוגמה: 10 לחודש</p>
+                </div>
+                <div>
+                  <label style={{display:'block',fontSize:13,fontWeight:700,color:'#dc2626',marginBottom:6}}>
+                    💳 יום חיוב אשראי
+                  </label>
+                  <input className="input input-num" type="number" min="1" max="31" placeholder="1"
+                         value={d.creditDay} onChange={e=>set('creditDay',parseInt(e.target.value)||1)}/>
+                  <p style={{fontSize:11,color:'#dc2626',marginTop:4}}>יום שחברת האשראי מחייבת</p>
+                </div>
+              </div>
+
+              <div style={{background:'#eff6ff',borderRadius:12,padding:12,marginTop:12,
+                           display:'flex',alignItems:'center',gap:10}}>
+                <span style={{fontSize:20}}>🤖</span>
+                <p style={{fontSize:12,color:'#1e40af',margin:0,lineHeight:1.5}}>
+                  <strong>משכורת אוטומטית:</strong> ביום {d.salaryDay||'?'} כל חודש תיכנס עסקת משכורת אוטומטית
+                </p>
               </div>
             </div>
           )}
@@ -518,7 +605,7 @@ function AddModal({onClose,onAdd}) {
 }
 
 /* ── DASHBOARD ── */
-function Dashboard({profile,txs,onAdd,budgetPlan}) {
+function Dashboard({profile,txs,onAdd,budgetPlan,daysToCredit,daysToSalary}) {
   const [showAdd,setShowAdd]=useState(false);
   const net=profile.netSalary||0;
   const budget=useMemo(()=>calcBudget(net,budgetPlan),[net,budgetPlan]);
@@ -531,6 +618,16 @@ function Dashboard({profile,txs,onAdd,budgetPlan}) {
   const monthSpent =Math.abs(thisMonth.filter(t=>t.amount<0).reduce((s,t)=>s+t.amount,0));
   const safeToSpend=Math.max(0,net-monthSpent);
   const spendColor=safeToSpend>net*.5?'#22C55E':safeToSpend>net*.2?'#F59E0B':'#EF4444';
+
+  // Credit card sum since last billing date (approximate)
+  const creditDay=profile.creditDay||1;
+  const today=now.getDate();
+  const billingStart=today>=creditDay
+    ? new Date(now.getFullYear(),now.getMonth(),creditDay)
+    : new Date(now.getFullYear(),now.getMonth()-1,creditDay);
+  const creditSum=Math.abs(txs
+    .filter(t=>t.amount<0&&new Date(t.date)>=billingStart&&(t.account==='Max'||t.account==='כרטיס אשראי'))
+    .reduce((s,t)=>s+t.amount,0));
 
   const recent=[...txs].sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,5);
 
@@ -551,6 +648,43 @@ function Dashboard({profile,txs,onAdd,budgetPlan}) {
       </div>
 
       <div style={{padding:'16px 16px 0',display:'flex',flexDirection:'column',gap:16}}>
+
+        {/* Salary & Credit info strip */}
+        {(profile.salaryDay||profile.creditDay)&&(
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+            {profile.salaryDay&&(
+              <div style={{background:'#f0fdf4',borderRadius:14,padding:'12px 14px',
+                           border:'1px solid #bbf7d0'}}>
+                <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
+                  <span style={{fontSize:18}}>💰</span>
+                  <span style={{fontSize:12,fontWeight:700,color:'#15803d'}}>משכורת</span>
+                </div>
+                <p style={{margin:0,fontSize:13,fontWeight:800,color:'#14532d'}}>
+                  {daysToSalary===0?'נכנסת היום! 🎉':`בעוד ${daysToSalary} יום`}
+                </p>
+                <p style={{margin:'2px 0 0',fontSize:11,color:'#6B7280'}}>
+                  כל ה-{profile.salaryDay} · {fmtILS(net)}
+                </p>
+              </div>
+            )}
+            {profile.creditDay&&(
+              <div style={{background: daysToCredit<=3?'#fef2f2':'#fff7ed',
+                           borderRadius:14,padding:'12px 14px',
+                           border:`1px solid ${daysToCredit<=3?'#fecaca':'#fed7aa'}`}}>
+                <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
+                  <span style={{fontSize:18}}>💳</span>
+                  <span style={{fontSize:12,fontWeight:700,color:daysToCredit<=3?'#b91c1c':'#c2410c'}}>חיוב אשראי</span>
+                </div>
+                <p style={{margin:0,fontSize:13,fontWeight:800,color:daysToCredit<=3?'#7f1d1d':'#7c2d12'}}>
+                  {daysToCredit===0?'חיוב היום! ⚠️':`בעוד ${daysToCredit} יום`}
+                </p>
+                <p style={{margin:'2px 0 0',fontSize:11,color:'#6B7280'}}>
+                  כל ה-{profile.creditDay}{creditSum>0?` · צבור: ${fmtILS(creditSum)}`:''}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Budget overview */}
         {net>0&&(
@@ -2262,6 +2396,18 @@ function SettingsTab({profile,onReset,onProfileUpdate,onBudgetChange}) {
           <label style={{display:'block',fontSize:13,fontWeight:600,color:'#374151',marginBottom:6}}>שכר ברוטו ₪</label>
           <input className="input input-num" type="number" value={p.grossSalary} onChange={e=>set('grossSalary',parseFloat(e.target.value)||0)}/>
         </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:14}}>
+          <div>
+            <label style={{display:'block',fontSize:13,fontWeight:600,color:'#15803d',marginBottom:6}}>💰 יום כניסת משכורת</label>
+            <input className="input input-num" type="number" min="1" max="31"
+                   value={p.salaryDay||10} onChange={e=>set('salaryDay',parseInt(e.target.value)||10)}/>
+          </div>
+          <div>
+            <label style={{display:'block',fontSize:13,fontWeight:600,color:'#dc2626',marginBottom:6}}>💳 יום חיוב אשראי</label>
+            <input className="input input-num" type="number" min="1" max="31"
+                   value={p.creditDay||1} onChange={e=>set('creditDay',parseInt(e.target.value)||1)}/>
+          </div>
+        </div>
         <button className="btn-primary" onClick={save}>
           {saved?'✓ נשמר!':'שמור שינויים'}
         </button>
@@ -2312,40 +2458,90 @@ function BottomNav({tab,setTab}) {
 
 /* ── APP ROOT ── */
 function App() {
-  const [budgetPlan,setBudgetPlan] = useState(()=>loadBudgetPlan());
-  const [done,setDone]       = useState(()=>lsGet(LS.DONE,false));
-  const [profile,setProfile] = useState(()=>lsGet(LS.PROFILE,null));
-  const [txs,setTxs]         = useState(()=>lsGet(LS.TX,[]));
-  const [tab,setTab]         = useState('dashboard');
+  const [budgetPlan,setBudgetPlan]   = useState(()=>loadBudgetPlan());
+  const [done,setDone]               = useState(()=>lsGet(LS.DONE,false));
+  const [profile,setProfile]         = useState(()=>lsGet(LS.PROFILE,null));
+  const [txs,setTxs]                 = useState(()=>lsGet(LS.TX,[]));
+  const [tab,setTab]                 = useState('dashboard');
+  const [salaryToast, setSalaryToast]= useState(null); // {amount, date}
 
   useEffect(()=>{ lsSet(LS.TX,txs); },[txs]);
 
+  // ── Auto-salary on every app load ──
+  useEffect(()=>{
+    if (!done||!profile) return;
+    const tx = checkAutoSalary(profile, txs);
+    if (tx) {
+      setTxs(prev=>[tx,...prev]);
+      setSalaryToast({amount:tx.amount, date:tx.date});
+      setTimeout(()=>setSalaryToast(null), 6000);
+    }
+  },[done, profile?.salaryDay]);
+
   function handleAdd(tx)  { setTxs(p=>[tx,...p]); }
   function handleImport(newTxs) { setTxs(p=>[...newTxs,...p]); }
-  function handleReset()  { lsClear(); setDone(false); setProfile(null); setTxs([]); }
+  function handleReset()  {
+    lsClear();
+    localStorage.removeItem(LS_SALARY_MONTHS);
+    setDone(false); setProfile(null); setTxs([]);
+  }
 
   if (!done||!profile) {
     return <Onboarding onDone={p=>{setProfile(p);setDone(true);}}/>;
   }
 
+  const creditDay  = profile.creditDay  || 1;
+  const salaryDay  = profile.salaryDay  || 10;
+  const daysToCredit = daysUntil(creditDay);
+  const daysToSalary = daysUntil(salaryDay);
+
   return (
     <div style={{maxWidth:500,margin:'0 auto',minHeight:'100vh',background:'#f0f4f8'}}>
+
+      {/* ── Salary auto-add toast ── */}
+      {salaryToast&&(
+        <div style={{position:'fixed',top:16,left:'50%',transform:'translateX(-50%)',zIndex:999,
+                     background:'#15803d',color:'white',borderRadius:14,padding:'12px 20px',
+                     boxShadow:'0 4px 20px rgba(0,0,0,.2)',fontSize:14,fontWeight:700,
+                     display:'flex',alignItems:'center',gap:10,whiteSpace:'nowrap'}}>
+          <span style={{fontSize:22}}>💰</span>
+          <span>משכורת נוספה אוטומטית — {fmtILS(salaryToast.amount)}</span>
+        </div>
+      )}
+
       {/* Page title bar */}
       <div style={{background:'white',borderBottom:'1px solid #e5e7eb',padding:'14px 20px',
                    position:'sticky',top:0,zIndex:30}}>
-        <div style={{display:'flex',alignItems:'center',gap:10}}>
-          <span style={{fontSize:22}}>💎</span>
-          <div>
-            <p style={{margin:0,fontSize:15,fontWeight:800,lineHeight:1}}>FinanceIL</p>
-            <p style={{margin:0,fontSize:11,color:'#9CA3AF'}}>
-              {new Intl.DateTimeFormat('he-IL',{month:'long',year:'numeric'}).format(new Date())}
-            </p>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+          <div style={{display:'flex',alignItems:'center',gap:10}}>
+            <span style={{fontSize:22}}>💎</span>
+            <div>
+              <p style={{margin:0,fontSize:15,fontWeight:800,lineHeight:1}}>FinanceIL</p>
+              <p style={{margin:0,fontSize:11,color:'#9CA3AF'}}>
+                {new Intl.DateTimeFormat('he-IL',{month:'long',year:'numeric'}).format(new Date())}
+              </p>
+            </div>
+          </div>
+          {/* Upcoming pills */}
+          <div style={{display:'flex',gap:6}}>
+            {daysToSalary<=7&&(
+              <div style={{background:'#f0fdf4',borderRadius:8,padding:'4px 8px',fontSize:11,fontWeight:700,color:'#15803d'}}>
+                💰 משכורת בעוד {daysToSalary}י׳
+              </div>
+            )}
+            {daysToCredit<=5&&(
+              <div style={{background:'#fef2f2',borderRadius:8,padding:'4px 8px',fontSize:11,fontWeight:700,color:'#b91c1c'}}>
+                💳 אשראי בעוד {daysToCredit}י׳
+              </div>
+            )}
           </div>
         </div>
       </div>
 
       <div className="main-content">
-        {tab==='dashboard'   && <Dashboard     profile={profile} txs={txs} onAdd={handleAdd} budgetPlan={budgetPlan}/>}
+        {tab==='dashboard'   && <Dashboard     profile={profile} txs={txs} onAdd={handleAdd}
+                                               budgetPlan={budgetPlan}
+                                               daysToCredit={daysToCredit} daysToSalary={daysToSalary}/>}
         {tab==='transactions'&& <TransactionsTab txs={txs} onAdd={handleAdd}/>}
         {tab==='import'      && <ImportTab      onImport={handleImport}/>}
         {tab==='investments' && <InvestmentsTab profile={profile}/>}
