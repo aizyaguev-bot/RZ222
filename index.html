@@ -296,6 +296,36 @@ function DonutChart({ data, centerLabel, centerValue }) {
 }
 
 /* ═══════════════════════════════════════════════════
+   LOCALSTORAGE  +  LIVE DATA HELPERS
+═══════════════════════════════════════════════════ */
+const LS_FINNHUB = 'fil_finnhub_key';
+const LS_INV     = 'fil_inv_values';
+
+function lsGet(key, fallback) {
+  try { const v = localStorage.getItem(key); return v !== null ? JSON.parse(v) : fallback; }
+  catch(e) { return fallback; }
+}
+function lsSet(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch(e) {} }
+
+/* Fetch one quote from Finnhub (requires free API key) */
+async function fetchFinnhub(symbol, apiKey) {
+  const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${apiKey}`);
+  if (!r.ok) throw new Error(r.status);
+  const d = await r.json();
+  if (!d || d.c <= 0) throw new Error('no data');
+  return { price: d.c, changePct: d.dp ?? 0, prevClose: d.pc };
+}
+
+/* Fetch live USD→ILS exchange rate (no key needed) */
+async function fetchUsdIls() {
+  try {
+    const r = await fetch('https://open.er-api.com/v6/latest/USD');
+    const d = await r.json();
+    return d?.rates?.ILS ?? USD_ILS;
+  } catch(e) { return USD_ILS; }
+}
+
+/* ═══════════════════════════════════════════════════
    PROGRESS BAR
 ═══════════════════════════════════════════════════ */
 function ProgressBar({ pct, color, label, sublabel }) {
@@ -317,54 +347,101 @@ function ProgressBar({ pct, color, label, sublabel }) {
    KEREN HISHTALMUT CARD
 ═══════════════════════════════════════════════════ */
 function KerenCard() {
-  const now = new Date();
-  const totalDays = (KEREN.maturityDate - KEREN.startDate) / 864e5;
-  const elapsed   = (now - KEREN.startDate) / 864e5;
-  const pct       = Math.min(100, (elapsed/totalDays)*100);
-  const mature    = now >= KEREN.maturityDate;
-  const daysLeft  = Math.max(0, Math.ceil((KEREN.maturityDate - now)/864e5));
-  const monthsLeft = Math.ceil(daysLeft/30);
-  const gain      = KEREN.currentValue - KEREN.totalContributed;
-  const gainPct   = (gain/KEREN.totalContributed)*100;
+  const stored     = lsGet(LS_INV, {});
+  const [value, setValue]     = useState(stored.kerenValue ?? KEREN.currentValue);
+  const [ytd,   setYtd]       = useState(stored.kerenYTD   ?? KEREN.ytdReturn);
+  const [editing, setEditing] = useState(false);
+  const [tmpVal,  setTmpVal]  = useState('');
+  const [tmpYtd,  setTmpYtd]  = useState('');
+  const [updatedAt, setUpdatedAt] = useState(stored.kerenUpdated ?? null);
+
+  function startEdit() { setTmpVal(value); setTmpYtd(ytd); setEditing(true); }
+  function saveEdit() {
+    const v = parseFloat(tmpVal), y = parseFloat(tmpYtd);
+    if (!isNaN(v) && v > 0) {
+      const ts = new Date().toISOString();
+      setValue(v); setYtd(isNaN(y)?ytd:y); setUpdatedAt(ts);
+      lsSet(LS_INV, { ...lsGet(LS_INV,{}), kerenValue:v, kerenYTD:isNaN(y)?ytd:y, kerenUpdated:ts });
+    }
+    setEditing(false);
+  }
+
+  const now        = new Date();
+  const totalDays  = (KEREN.maturityDate - KEREN.startDate) / 864e5;
+  const elapsed    = (now - KEREN.startDate) / 864e5;
+  const pct        = Math.min(100, (elapsed/totalDays)*100);
+  const mature     = now >= KEREN.maturityDate;
+  const monthsLeft = Math.ceil(Math.max(0, KEREN.maturityDate - now) / (30*864e5));
+  const gain       = value - KEREN.totalContributed;
 
   return (
     <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden card-lift">
-      {/* Header */}
-      <div className="p-4 flex items-center gap-3"
-           style={{background:'linear-gradient(135deg,#0f172a,#1e3a5f)'}}>
+      <div className="p-4 flex items-center gap-3" style={{background:'linear-gradient(135deg,#0f172a,#1e3a5f)'}}>
         <span style={{fontSize:28}}>📈</span>
         <div className="flex-1 text-white">
           <p className="font-bold text-base">קרן השתלמות</p>
           <p style={{opacity:.7,fontSize:12}}>{KEREN.provider} · {KEREN.track}</p>
         </div>
         <div className="text-left text-white">
-          <p className="text-xl font-extrabold">{fmtILS(KEREN.currentValue)}</p>
+          <p className="text-xl font-extrabold">{fmtILS(value)}</p>
           <p style={{opacity:.7,fontSize:11,textAlign:'center'}}>שווי נוכחי</p>
         </div>
       </div>
 
-      <div className="p-4 space-y-4">
-        {/* Maturity progress */}
-        <div>
-          <ProgressBar
-            pct={pct}
-            color={mature ? '#22C55E' : '#3B82F6'}
-            label={mature ? '✅ פתוחה למשיכה!' : `⏳ ${monthsLeft} חודשים לפדיון`}
-            sublabel={`${pct.toFixed(0)}% מ-6 שנים`}
-          />
-          {mature && (
-            <p className="text-xs text-green-600 font-semibold mt-1">
-              הקרן בשלה — ניתן למשוך פטור ממס!
-            </p>
-          )}
-        </div>
+      {/* Manual update notice */}
+      <div className="px-4 pt-3 flex items-center justify-between">
+        <p className="text-xs text-gray-400">
+          {updatedAt
+            ? `עודכן ידנית: ${new Intl.DateTimeFormat('he-IL',{day:'numeric',month:'short',year:'numeric'}).format(new Date(updatedAt))}`
+            : 'ℹ️ עדכן ידנית מדוח gemel.co.il'}
+        </p>
+        <button onClick={startEdit}
+                style={{fontSize:12,color:'#3B82F6',fontWeight:600,background:'none',border:'none',cursor:'pointer',padding:'2px 8px',borderRadius:8,background:'#eff6ff'}}>
+          ✏️ עדכן שווי
+        </button>
+      </div>
 
-        {/* Stats grid */}
+      {editing && (
+        <div className="mx-4 mt-3 bg-blue-50 rounded-xl p-3 space-y-2">
+          <p className="text-xs font-semibold text-blue-800">הזן ערכים מדוח הקרן:</p>
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <label className="text-xs text-blue-700 block mb-1">שווי נוכחי (₪)</label>
+              <input type="number" value={tmpVal} onChange={e=>setTmpVal(e.target.value)}
+                     style={{width:'100%',border:'1px solid #bfdbfe',borderRadius:8,padding:'6px 10px',fontSize:13}}
+                     placeholder="87450" />
+            </div>
+            <div style={{width:90}}>
+              <label className="text-xs text-blue-700 block mb-1">תשואה YTD %</label>
+              <input type="number" step="0.1" value={tmpYtd} onChange={e=>setTmpYtd(e.target.value)}
+                     style={{width:'100%',border:'1px solid #bfdbfe',borderRadius:8,padding:'6px 10px',fontSize:13}}
+                     placeholder="8.3" />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={saveEdit}
+                    style={{flex:1,background:'#3B82F6',color:'white',border:'none',borderRadius:8,padding:'7px',fontSize:13,fontWeight:700,cursor:'pointer'}}>
+              שמור ✓
+            </button>
+            <button onClick={()=>setEditing(false)}
+                    style={{padding:'7px 12px',background:'#e5e7eb',border:'none',borderRadius:8,fontSize:13,cursor:'pointer'}}>
+              ביטול
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="p-4 space-y-4">
+        <ProgressBar pct={pct} color={mature?'#22C55E':'#3B82F6'}
+          label={mature?'✅ פתוחה למשיכה!':`⏳ ${monthsLeft} חודשים לפדיון`}
+          sublabel={`${pct.toFixed(0)}% מ-6 שנים`} />
+        {mature && <p className="text-xs text-green-600 font-semibold">הקרן בשלה — ניתן למשוך פטור ממס!</p>}
+
         <div className="grid grid-cols-3 gap-3">
           {[
-            { label:'הפקדה חודשית',  val: fmtILS(KEREN.monthlyEmployee + KEREN.monthlyEmployer) },
+            { label:'הפקדה חודשית',       val: fmtILS(KEREN.monthlyEmployee + KEREN.monthlyEmployer) },
             { label:'תשואה שנתית ממוצעת', val: fmtPct(KEREN.avgAnnualReturn,true) },
-            { label:'רווח כולל',     val: fmtILS(gain) },
+            { label:'רווח כולל',           val: fmtILS(gain) },
           ].map(s => (
             <div key={s.label} className="bg-gray-50 rounded-xl p-3 text-center">
               <p className="text-xs text-gray-400 mb-1" style={{lineHeight:1.3}}>{s.label}</p>
@@ -373,24 +450,18 @@ function KerenCard() {
           ))}
         </div>
 
-        {/* Contribution breakdown */}
         <div className="bg-blue-50 rounded-xl p-3 text-sm">
           <p className="font-semibold text-blue-800 mb-2">הפקדה חודשית — פירוט</p>
-          <div className="flex justify-between text-blue-700">
-            <span>עובד (2.5%)</span><span>{fmtILS(KEREN.monthlyEmployee)}</span>
-          </div>
-          <div className="flex justify-between text-blue-700 mt-1">
-            <span>מעסיק (7.5%)</span><span>{fmtILS(KEREN.monthlyEmployer)}</span>
-          </div>
+          <div className="flex justify-between text-blue-700"><span>עובד (2.5%)</span><span>{fmtILS(KEREN.monthlyEmployee)}</span></div>
+          <div className="flex justify-between text-blue-700 mt-1"><span>מעסיק (7.5%)</span><span>{fmtILS(KEREN.monthlyEmployer)}</span></div>
           <div className="flex justify-between text-blue-900 font-bold mt-1.5 pt-1.5 border-t border-blue-200">
             <span>סה"כ חודשי</span><span>{fmtILS(KEREN.monthlyEmployee + KEREN.monthlyEmployer)}</span>
           </div>
         </div>
 
-        {/* YTD return */}
         <div className="flex items-center justify-between bg-green-50 rounded-xl p-3">
           <span className="text-sm text-green-800 font-medium">תשואה מתחילת שנה (YTD)</span>
-          <span className="text-lg font-extrabold text-green-600">+{KEREN.ytdReturn}%</span>
+          <span className="text-lg font-extrabold text-green-600">+{ytd}%</span>
         </div>
       </div>
     </div>
@@ -401,49 +472,98 @@ function KerenCard() {
    PENSION CARD
 ═══════════════════════════════════════════════════ */
 function PensionCard() {
+  const stored     = lsGet(LS_INV, {});
+  const [value, setValue]     = useState(stored.pensionValue ?? PENSION.currentValue);
+  const [ytd,   setYtd]       = useState(stored.pensionYTD   ?? PENSION.ytdReturn);
+  const [editing, setEditing] = useState(false);
+  const [tmpVal,  setTmpVal]  = useState('');
+  const [tmpYtd,  setTmpYtd]  = useState('');
+  const [updatedAt, setUpdatedAt] = useState(stored.pensionUpdated ?? null);
+
+  function startEdit() { setTmpVal(value); setTmpYtd(ytd); setEditing(true); }
+  function saveEdit() {
+    const v = parseFloat(tmpVal), y = parseFloat(tmpYtd);
+    if (!isNaN(v) && v > 0) {
+      const ts = new Date().toISOString();
+      setValue(v); setYtd(isNaN(y)?ytd:y); setUpdatedAt(ts);
+      lsSet(LS_INV, { ...lsGet(LS_INV,{}), pensionValue:v, pensionYTD:isNaN(y)?ytd:y, pensionUpdated:ts });
+    }
+    setEditing(false);
+  }
+
+  const gain = value - PENSION.totalContributed;
   const yearsToRetirement = PENSION.retirementAge - PENSION.currentAge;
-  const gain    = PENSION.currentValue - PENSION.totalContributed;
-  const ageNow  = PENSION.currentAge;
 
   return (
     <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden card-lift">
-      <div className="p-4 flex items-center gap-3"
-           style={{background:'linear-gradient(135deg,#1a1a2e,#4a1942)'}}>
+      <div className="p-4 flex items-center gap-3" style={{background:'linear-gradient(135deg,#1a1a2e,#4a1942)'}}>
         <span style={{fontSize:28}}>🏛️</span>
         <div className="flex-1 text-white">
           <p className="font-bold text-base">פנסיה</p>
           <p style={{opacity:.7,fontSize:12}}>{PENSION.provider} · {PENSION.track}</p>
         </div>
         <div className="text-left text-white">
-          <p className="text-xl font-extrabold">{fmtILS(PENSION.currentValue)}</p>
+          <p className="text-xl font-extrabold">{fmtILS(value)}</p>
           <p style={{opacity:.7,fontSize:11,textAlign:'center'}}>שווי נוכחי</p>
         </div>
       </div>
 
-      <div className="p-4 space-y-4">
-        {/* Retirement progress */}
-        <div>
-          <ProgressBar
-            pct={(ageNow/(PENSION.retirementAge))*100}
-            color="#8B5CF6"
-            label={`גיל נוכחי: ${ageNow}`}
-            sublabel={`${yearsToRetirement} שנים לפרישה`}
-          />
-        </div>
+      <div className="px-4 pt-3 flex items-center justify-between">
+        <p className="text-xs text-gray-400">
+          {updatedAt
+            ? `עודכן: ${new Intl.DateTimeFormat('he-IL',{day:'numeric',month:'short',year:'numeric'}).format(new Date(updatedAt))}`
+            : 'ℹ️ עדכן ידנית מ-pension.mof.gov.il'}
+        </p>
+        <button onClick={startEdit}
+                style={{fontSize:12,color:'#8B5CF6',fontWeight:600,background:'#f5f3ff',border:'none',cursor:'pointer',padding:'2px 8px',borderRadius:8}}>
+          ✏️ עדכן שווי
+        </button>
+      </div>
 
-        {/* Projection */}
-        <div className="rounded-xl p-4 text-center"
-             style={{background:'linear-gradient(135deg,#f3e8ff,#ede9fe)'}}>
+      {editing && (
+        <div className="mx-4 mt-3 bg-purple-50 rounded-xl p-3 space-y-2">
+          <p className="text-xs font-semibold text-purple-800">הזן ערכים מדוח הפנסיה:</p>
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <label className="text-xs text-purple-700 block mb-1">שווי נוכחי (₪)</label>
+              <input type="number" value={tmpVal} onChange={e=>setTmpVal(e.target.value)}
+                     style={{width:'100%',border:'1px solid #ddd6fe',borderRadius:8,padding:'6px 10px',fontSize:13}}
+                     placeholder="124500" />
+            </div>
+            <div style={{width:90}}>
+              <label className="text-xs text-purple-700 block mb-1">תשואה YTD %</label>
+              <input type="number" step="0.1" value={tmpYtd} onChange={e=>setTmpYtd(e.target.value)}
+                     style={{width:'100%',border:'1px solid #ddd6fe',borderRadius:8,padding:'6px 10px',fontSize:13}}
+                     placeholder="6.8" />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={saveEdit}
+                    style={{flex:1,background:'#8B5CF6',color:'white',border:'none',borderRadius:8,padding:'7px',fontSize:13,fontWeight:700,cursor:'pointer'}}>
+              שמור ✓
+            </button>
+            <button onClick={()=>setEditing(false)}
+                    style={{padding:'7px 12px',background:'#e5e7eb',border:'none',borderRadius:8,fontSize:13,cursor:'pointer'}}>
+              ביטול
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="p-4 space-y-4">
+        <ProgressBar pct={(PENSION.currentAge/PENSION.retirementAge)*100} color="#8B5CF6"
+          label={`גיל נוכחי: ${PENSION.currentAge}`} sublabel={`${yearsToRetirement} שנים לפרישה`} />
+
+        <div className="rounded-xl p-4 text-center" style={{background:'linear-gradient(135deg,#f3e8ff,#ede9fe)'}}>
           <p className="text-xs text-purple-600 mb-1">צבירה חזויה בגיל {PENSION.retirementAge}</p>
           <p className="text-3xl font-extrabold text-purple-900">{fmtILS(PENSION.projectedValue)}</p>
           <p className="text-xs text-purple-500 mt-1">בהנחת תשואה ממוצעת {PENSION.avgAnnualReturn}%</p>
         </div>
 
-        {/* Stats */}
         <div className="grid grid-cols-3 gap-3">
           {[
             { label:'הפקדה חודשית', val: fmtILS(PENSION.monthlyEmployee + PENSION.monthlyEmployer) },
-            { label:'תשואה YTD',    val: fmtPct(PENSION.ytdReturn,true) },
+            { label:'תשואה YTD',    val: fmtPct(ytd,true) },
             { label:'רווח כולל',    val: fmtILS(gain) },
           ].map(s => (
             <div key={s.label} className="bg-gray-50 rounded-xl p-3 text-center">
@@ -453,15 +573,10 @@ function PensionCard() {
           ))}
         </div>
 
-        {/* Contribution breakdown */}
         <div className="bg-purple-50 rounded-xl p-3 text-sm">
           <p className="font-semibold text-purple-800 mb-2">הפקדה חודשית — פירוט</p>
-          <div className="flex justify-between text-purple-700">
-            <span>עובד (6%)</span><span>{fmtILS(PENSION.monthlyEmployee)}</span>
-          </div>
-          <div className="flex justify-between text-purple-700 mt-1">
-            <span>מעסיק (תגמולים + פיצויים)</span><span>{fmtILS(PENSION.monthlyEmployer)}</span>
-          </div>
+          <div className="flex justify-between text-purple-700"><span>עובד (6%)</span><span>{fmtILS(PENSION.monthlyEmployee)}</span></div>
+          <div className="flex justify-between text-purple-700 mt-1"><span>מעסיק (תגמולים + פיצויים)</span><span>{fmtILS(PENSION.monthlyEmployer)}</span></div>
           <div className="flex justify-between text-purple-900 font-bold mt-1.5 pt-1.5 border-t border-purple-200">
             <span>סה"כ חודשי</span><span>{fmtILS(PENSION.monthlyEmployee + PENSION.monthlyEmployer)}</span>
           </div>
@@ -476,8 +591,55 @@ function PensionCard() {
 ═══════════════════════════════════════════════════ */
 function StockPortfolio() {
   const [prices,     setPrices]     = useState(INIT_PRICES);
+  const [dayChanges, setDayChanges] = useState({});
+  const [usdIls,     setUsdIls]     = useState(USD_ILS);
+  const [apiKey,     setApiKey]     = useState(() => lsGet(LS_FINNHUB, ''));
+  const [keyInput,   setKeyInput]   = useState('');
+  const [showKeyBox, setShowKeyBox] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [liveMode,   setLiveMode]   = useState(false);
+  const [error,      setError]      = useState(null);
   const [lastUpdate, setLastUpdate] = useState(new Date());
+
+  /* Fetch live exchange rate once on mount */
+  useEffect(() => { fetchUsdIls().then(r => setUsdIls(r)); }, []);
+
+  /* Auto-fetch if key already saved */
+  useEffect(() => { if (apiKey) doLiveFetch(apiKey); }, []);
+
+  async function doLiveFetch(key) {
+    setRefreshing(true); setError(null);
+    const syms = PORTFOLIO_DEF.map(s => s.symbol);
+    const newPrices = {}, newChanges = {};
+    let fetched = 0;
+    await Promise.all(syms.map(async sym => {
+      try {
+        const q = await fetchFinnhub(sym, key);
+        newPrices[sym]  = q.price;
+        newChanges[sym] = q.changePct;
+        fetched++;
+      } catch(e) { /* keep mock price for this symbol */ }
+    }));
+    if (fetched > 0) {
+      setPrices(prev => ({ ...prev, ...newPrices }));
+      setDayChanges(newChanges);
+      setLiveMode(true);
+      setLastUpdate(new Date());
+    } else {
+      setError('לא ניתן לטעון נתונים — בדוק מפתח API');
+    }
+    setRefreshing(false);
+  }
+
+  function saveKey() {
+    const k = keyInput.trim();
+    if (!k) return;
+    lsSet(LS_FINNHUB, k);
+    setApiKey(k);
+    setShowKeyBox(false);
+    setKeyInput('');
+    doLiveFetch(k);
+  }
 
   function simulateRefresh() {
     setRefreshing(true);
@@ -485,14 +647,13 @@ function StockPortfolio() {
       setPrices(prev => {
         const next = {};
         for (const sym in prev) {
-          const chg = 1 + (Math.random() * 0.08 - 0.04); // ±4%
+          const chg = 1 + (Math.random() * 0.06 - 0.03);
           next[sym] = Math.round(prev[sym] * chg * 100) / 100;
         }
         return next;
       });
-      setLastUpdate(new Date());
-      setRefreshing(false);
-    }, 900);
+      setLastUpdate(new Date()); setRefreshing(false);
+    }, 700);
   }
 
   const rows = PORTFOLIO_DEF.map(s => {
@@ -501,7 +662,7 @@ function StockPortfolio() {
     const currentVal   = s.shares * currentPrice;
     const plUSD        = currentVal - costBasis;
     const plPct        = (plUSD / costBasis) * 100;
-    const valILS       = currentVal * USD_ILS;
+    const valILS       = currentVal * usdIls;
     return { ...s, currentPrice, costBasis, currentVal, plUSD, plPct, valILS };
   });
 
@@ -522,38 +683,73 @@ function StockPortfolio() {
            style={{background:'linear-gradient(135deg,#052e16,#14532d)'}}>
         <span style={{fontSize:28}}>📊</span>
         <div className="flex-1 text-white">
-          <p className="font-bold text-base">תיק מניות</p>
+          <p className="font-bold text-base flex items-center gap-2">
+            תיק מניות
+            {liveMode
+              ? <span style={{background:'#22C55E',fontSize:10,padding:'1px 6px',borderRadius:10,fontWeight:700}}>🔴 LIVE</span>
+              : <span style={{background:'rgba(255,255,255,.2)',fontSize:10,padding:'1px 6px',borderRadius:10}}>DEMO</span>
+            }
+          </p>
           <p style={{opacity:.7,fontSize:12}}>
             {rows.length} החזקות · עודכן {new Intl.DateTimeFormat('he-IL',{hour:'2-digit',minute:'2-digit'}).format(lastUpdate)}
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <div className="text-left text-white">
             <p className="text-xl font-extrabold">{fmtILS(totalValILS)}</p>
             <p style={{opacity:.7,fontSize:11,textAlign:'center'}}>שווי נוכחי</p>
           </div>
-          <button onClick={simulateRefresh} disabled={refreshing}
+          <button onClick={()=>setShowKeyBox(v=>!v)}
+                  style={{background:'rgba(255,255,255,.15)',border:'none',borderRadius:10,padding:'8px 10px',
+                          color:'white',cursor:'pointer',fontSize:16}} title="הגדר מפתח Finnhub">⚙️</button>
+          <button onClick={apiKey ? ()=>doLiveFetch(apiKey) : simulateRefresh} disabled={refreshing}
                   style={{background:'rgba(255,255,255,.15)',border:'none',borderRadius:10,padding:'8px 12px',
                           color:'white',cursor:'pointer',fontSize:13,fontWeight:600}}>
             <span className={refreshing?'spin':''} style={{display:'inline-block'}}>🔄</span>
-            {!refreshing && ' רענן'}
+            {!refreshing && (apiKey?' Live':' רענן')}
           </button>
         </div>
       </div>
+
+      {/* Finnhub API key setup panel */}
+      {showKeyBox && (
+        <div className="p-4 border-b border-gray-100 bg-gray-50 space-y-2">
+          <p className="text-sm font-semibold text-gray-800">🔑 מפתח Finnhub API (חינם)</p>
+          <p className="text-xs text-gray-500">
+            קבל מפתח חינם ב-<a href="https://finnhub.io/register" target="_blank" rel="noopener"
+              style={{color:'#3B82F6',textDecoration:'underline'}}>finnhub.io/register</a> ← אחר כך הדבק כאן:
+          </p>
+          <div className="flex gap-2">
+            <input type="text" placeholder="c_xxxxxxxxxxxxxxxx" value={keyInput}
+                   onChange={e=>setKeyInput(e.target.value)}
+                   style={{flex:1,border:'1px solid #d1d5db',borderRadius:8,padding:'8px 12px',
+                           fontSize:13,direction:'ltr',fontFamily:'monospace'}} />
+            <button onClick={saveKey}
+                    style={{background:'#22C55E',color:'white',border:'none',borderRadius:8,
+                            padding:'8px 16px',fontWeight:700,fontSize:13,cursor:'pointer'}}>
+              שמור ✓
+            </button>
+          </div>
+          {apiKey && (
+            <p className="text-xs text-green-600">✅ מפתח שמור · שער דולר בזמן אמת: ₪{usdIls.toFixed(3)}</p>
+          )}
+          {error && <p className="text-xs text-red-500">⚠️ {error}</p>}
+        </div>
+      )}
 
       {/* Summary strip */}
       <div className="grid grid-cols-3 gap-0 border-b border-gray-100">
         {[
           { label:'עלות כוללת', val: fmtUSD(totalCost),   sub:null },
           { label:'רווח/הפסד',  val: fmtUSD(totalPL),     sub: fmtPct(totalPLPct), pos: totalPL>=0 },
-          { label:'שער דולר',   val: `₪${USD_ILS}`,       sub: 'מדומה' },
+          { label:'שער דולר',   val: `₪${usdIls.toFixed(3)}`, sub: liveMode?'בזמן אמת':'מדומה' },
         ].map((s,i) => (
           <div key={i} className={`p-3 text-center ${i<2?'border-l border-gray-100':''}`}>
             <p className="text-xs text-gray-400 mb-0.5">{s.label}</p>
             <p className={`text-sm font-bold ${s.pos!==undefined?(s.pos?'text-green-600':'text-red-500'):'text-gray-800'}`}>
               {s.val}
             </p>
-            {s.sub && <p className={`text-xs ${s.pos?'text-green-500':'text-red-400'}`}>{s.sub}</p>}
+            {s.sub && <p className={`text-xs ${s.pos!==undefined?(s.pos?'text-green-500':'text-red-400'):'text-gray-400'}`}>{s.sub}</p>}
           </div>
         ))}
       </div>
@@ -570,8 +766,9 @@ function StockPortfolio() {
           </thead>
           <tbody>
             {rows.map((r,i) => {
-              const initPrice = INIT_PRICES[r.symbol];
-              const dayChg    = ((r.currentPrice - initPrice)/initPrice)*100;
+              const dayChg = dayChanges[r.symbol] !== undefined
+                ? dayChanges[r.symbol]
+                : ((r.currentPrice - INIT_PRICES[r.symbol]) / INIT_PRICES[r.symbol]) * 100;
               const pos       = r.plUSD >= 0;
               const dayPos    = dayChg >= 0;
               return (
