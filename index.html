@@ -659,6 +659,81 @@ function Dashboard({profile,txs,onAdd,budgetPlan,daysToCredit,daysToSalary}) {
 
       <div style={{padding:'16px 16px 0',display:'flex',flexDirection:'column',gap:16}}>
 
+        {/* ── Portfolio P&L card ── */}
+        {(()=>{
+          const port   = lsGet(LS_PORTFOLIO, {holdings:[], cash:0, history:[]});
+          const cached = lsGet('fil_lp', null);
+          if (!port.holdings || port.holdings.length === 0) return null;
+
+          const livePx  = cached?.prices || {};
+          const usdRate = cached?.usdIls || 3.72;
+          const isLive  = cached && (Date.now() - (cached.ts||0)) < 3*60*60*1000; // stale after 3h
+
+          // Unrealized P&L
+          let costBasis=0, curValUSD=0;
+          port.holdings.forEach(h=>{
+            const price = livePx[h.symbol] ?? h.avgCost;
+            costBasis  += h.shares * h.avgCost;
+            curValUSD  += h.shares * price;
+          });
+          const unrealPL    = Math.round((curValUSD - costBasis)*100)/100;
+          const unrealPct   = costBasis>0 ? (unrealPL/costBasis)*100 : 0;
+          const unrealILS   = Math.round(unrealPL*usdRate);
+
+          // Realized P&L (from sell history)
+          const realPL = (port.history||[]).filter(h=>h.type==='sell').reduce((s,h)=>s+(h.pl||0),0);
+          const realILS = Math.round(realPL*usdRate);
+
+          // Total portfolio ILS
+          const totalUSD = curValUSD + (port.cash||0);
+          const totalILS = Math.round(totalUSD*usdRate);
+
+          const pos = unrealPL>=0;
+          return (
+            <div style={{background:'linear-gradient(135deg,#0c1a2e,#1a2e4a)',borderRadius:16,
+                         padding:'16px 18px',color:'white'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:12}}>
+                <div>
+                  <p style={{margin:0,fontSize:12,opacity:.65}}>
+                    📊 תיק מניות{isLive?' · LIVE':''}
+                  </p>
+                  <p style={{margin:'3px 0 0',fontSize:22,fontWeight:800}}>
+                    {'$'+(Math.round(totalUSD)).toLocaleString()}
+                  </p>
+                  <p style={{margin:'2px 0 0',fontSize:12,opacity:.55}}>{fmtILS(totalILS)}</p>
+                </div>
+                {/* Unrealized P&L */}
+                <div style={{background:pos?'rgba(34,197,94,.2)':'rgba(239,68,68,.2)',
+                             borderRadius:12,padding:'10px 14px',textAlign:'left'}}>
+                  <p style={{margin:0,fontSize:10,opacity:.7}}>רווח/הפסד לא ממומש</p>
+                  <p style={{margin:'3px 0 0',fontSize:16,fontWeight:800,
+                             color:pos?'#4ade80':'#f87171'}}>
+                    {pos?'+':''}{fmtILS(unrealILS)}
+                  </p>
+                  <p style={{margin:'1px 0 0',fontSize:11,color:pos?'#86efac':'#fca5a5'}}>
+                    {pos?'+':''}{unrealPct.toFixed(2)}% · {pos?'+':''}{unrealPL>=0?'$':'−$'}{Math.abs(unrealPL).toFixed(0)}
+                  </p>
+                </div>
+              </div>
+              {realPL!==0&&(
+                <div style={{borderTop:'1px solid rgba(255,255,255,.1)',paddingTop:10,
+                             display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                  <span style={{fontSize:12,opacity:.65}}>רווח ממומש (מכירות)</span>
+                  <span style={{fontSize:13,fontWeight:700,
+                                color:realPL>=0?'#4ade80':'#f87171'}}>
+                    {realPL>=0?'+':''}{fmtILS(realILS)} (${Math.abs(realPL).toFixed(0)})
+                  </span>
+                </div>
+              )}
+              {!isLive&&(
+                <p style={{margin:'8px 0 0',fontSize:10,opacity:.4}}>
+                  מחירים לא עדכניים — פתח את תיק המניות לרענון
+                </p>
+              )}
+            </div>
+          );
+        })()}
+
         {/* Salary & Credit info strip */}
         {(profile.salaryDay||profile.creditDay)&&(
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
@@ -1344,6 +1419,8 @@ function PortfolioSection() {
     if(ok>0){
       setLivePrices(p); setDayChanges(c); setLiveMode(true); setLastFetch(new Date());
       setFetchErr(null);
+      // persist for Dashboard to read without re-fetching
+      lsSet('fil_lp', {prices:p, usdIls, ts:Date.now()});
     } else {
       const hint = lastErr.includes('401')||lastErr.includes('403') ? 'מפתח API שגוי'
                  : lastErr.includes('429') ? 'יותר מדי בקשות — נסה שוב עוד דקה'
