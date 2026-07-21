@@ -916,47 +916,107 @@ function parseBankOCR(text) {
   return results;
 }
 
+/* ── PORTFOLIO/KEREN/PENSION OCR PARSERS ── */
+
+// Detect document type from OCR text
+function detectDocType(text) {
+  const t = text.toLowerCase();
+  if (/קרן השתלמות|gemel|gml|השתלמות/.test(t)) return 'keren';
+  if (/pension|פנסיה|פנסיוני|קרן פנסיה/.test(t)) return 'pension';
+  if (/portfolio|holdings|position|מניות|נייר ערך|ticker|symbol/.test(t)) return 'stocks';
+  if (/account|חשבון|יתרה|balance/.test(t)) return 'bank';
+  return 'bank'; // default to bank transactions
+}
+
+// Parse a brokerage/portfolio screenshot
+// Looks for: TICKER  SHARES  PRICE  VALUE patterns
+function parsePortfolioOCR(text) {
+  const lines = text.split('\n').map(l=>l.trim()).filter(l=>l.length>3);
+  const holdings = [];
+  // Common ticker pattern: 2-5 uppercase letters (optionally .TA/.US)
+  const TICKER_RE = /\b([A-Z]{1,5}(?:\.[A-Z]{2})?)\b/g;
+  const NUM_RE    = /[\d,]+\.?\d*/g;
+  for (const line of lines) {
+    const tickers = [...(line.matchAll(TICKER_RE)||[])].map(m=>m[1]);
+    const nums    = [...(line.matchAll(NUM_RE)||[])].map(m=>parseFloat(m[0].replace(/,/g,''))).filter(n=>n>0&&n<1e9);
+    if (!tickers.length || nums.length < 2) continue;
+    // Skip lines that are just headers (DATE, NAME, TOTAL etc.)
+    const sym = tickers[0];
+    if (['THE','AND','FOR','NET','ILS','USD','EUR','GBP','THE','ALL','NEW'].includes(sym)) continue;
+    // Heuristic: first number is shares (small), second is price, last large is value
+    nums.sort((a,b)=>a-b);
+    const shares = nums[0];      // smallest = shares count
+    const price  = nums[Math.floor(nums.length/2)]; // middle = price
+    if (shares <= 0 || price <= 0) continue;
+    holdings.push({ symbol: sym, shares, avgCost: price, name: sym });
+  }
+  return holdings;
+}
+
+// Parse a keren/pension statement — look for a large ₪ value
+function parseInvestmentAccountOCR(text) {
+  const NUM_RE = /[\d,]+\.?\d*/g;
+  const nums = [...(text.matchAll(NUM_RE)||[])].map(m=>parseFloat(m[0].replace(/,/g,''))).filter(n=>n>1000&&n<1e10);
+  if (!nums.length) return null;
+  // The largest number is likely the current value
+  const value = Math.max(...nums);
+  // Look for a % return
+  const pctMatch = text.match(/([+-]?\d+\.?\d*)%/);
+  const ytd = pctMatch ? parseFloat(pctMatch[1]) : null;
+  return { value: Math.round(value), ytd };
+}
+
 /* ── SCREENSHOT IMPORT ── */
-function ScreenshotImport({onImport}) {
-  const [imgUrl, setImgUrl]     = useState(null);
-  const [stage,  setStage]      = useState('upload'); // upload|ocr|preview|done
-  const [prog,   setProg]       = useState(0);
-  const [parsed, setParsed]     = useState([]);
-  const [ocrErr, setOcrErr]     = useState(null);
-  const [rows,   setRows]       = useState([]); // manual editable rows
+function ScreenshotImport({onImport, onUpdateInvestment}) {
+  const [imgUrl,   setImgUrl]   = useState(null);
+  const [docType,  setDocType]  = useState(null); // bank|stocks|keren|pension
+  const [stage,    setStage]    = useState('type'); // type|ocr|preview|done
+  const [prog,     setProg]     = useState(0);
+  const [parsed,   setParsed]   = useState([]);
+  const [ocrErr,   setOcrErr]   = useState(null);
+  const [rows,     setRows]     = useState([]);
+  const [invResult,setInvResult]= useState(null); // {value, ytd} for keren/pension/stocks
   const fileRef = useRef();
+
+  function chooseType(type) { setDocType(type); setStage('upload'); }
 
   async function handleFile(file) {
     if (!file.type.startsWith('image/')) { setOcrErr('יש להעלות תמונה (PNG/JPG)'); return; }
     const url=URL.createObjectURL(file);
     setImgUrl(url); setOcrErr(null); setStage('ocr'); setProg(0);
+    let ocrText = '';
     try {
       if (typeof Tesseract === 'undefined') throw new Error('Tesseract not loaded');
       const result = await Tesseract.recognize(file,'heb+eng',{
         logger: m => { if(m.status==='recognizing text') setProg(Math.round((m.progress||0)*100)); }
       });
-      const txs = parseBankOCR(result.data.text);
-      if (txs.length===0) {
-        // no structured data found → show raw text for user to review
-        setRows([{id:1,description:'',amount:'',date:new Date().toISOString().split('T')[0]}]);
-        setOcrErr('לא זוהו עסקאות אוטומטית — הזן ידנית');
-      } else {
-        setParsed(txs);
-      }
-      setStage('preview');
+      ocrText = result.data.text;
     } catch(e) {
-      // Fallback: show image + manual entry
-      setRows([{id:Date.now(),description:'',amount:'',date:new Date().toISOString().split('T')[0]}]);
-      setOcrErr('OCR לא זמין — הזן ידנית על פי הצילום');
-      setStage('preview');
+      setOcrErr('OCR לא זמין — הזן ידנית');
     }
+
+    const effectiveType = docType || (ocrText ? detectDocType(ocrText) : 'bank');
+
+    if (effectiveType==='stocks' && ocrText) {
+      const holdings = parsePortfolioOCR(ocrText);
+      setInvResult({type:'stocks', holdings});
+    } else if ((effectiveType==='keren'||effectiveType==='pension') && ocrText) {
+      const res = parseInvestmentAccountOCR(ocrText);
+      setInvResult({type:effectiveType, ...res});
+    } else {
+      // bank transactions
+      const txs = ocrText ? parseBankOCR(ocrText) : [];
+      if (txs.length>0) setParsed(txs);
+      else { setRows([{id:1,description:'',amount:'',date:new Date().toISOString().split('T')[0]}]); setOcrErr('לא זוהו נתונים אוטומטית'); }
+    }
+    setStage('preview');
   }
 
   function addRow(){setRows(r=>[...r,{id:Date.now(),description:'',amount:'',date:new Date().toISOString().split('T')[0]}]);}
   function delRow(id){setRows(r=>r.filter(x=>x.id!==id));}
   function editRow(id,k,v){setRows(r=>r.map(x=>x.id===id?{...x,[k]:v}:x));}
 
-  function confirm() {
+  function confirmBank() {
     const finalTxs = parsed.length>0 ? parsed : rows.filter(r=>r.description&&r.amount!=='').map(r=>{
       const amt=parseFloat(r.amount)||0;
       const cat=categorize(r.description);
@@ -966,16 +1026,61 @@ function ScreenshotImport({onImport}) {
     if(finalTxs.length>0){onImport(finalTxs);setStage('done');}
   }
 
+  function confirmInv() {
+    if(onUpdateInvestment && invResult) onUpdateInvestment(invResult);
+    setStage('done');
+  }
+
+  function reset() { setStage('type'); setDocType(null); setImgUrl(null); setParsed([]); setRows([]); setInvResult(null); setOcrErr(null); }
+
+  const typeOptions=[
+    {id:'bank',    emoji:'🏦', title:'עסקאות בנק',       sub:'תנועות בחשבון, חיוב כרטיס'},
+    {id:'stocks',  emoji:'📊', title:'תיק מניות',         sub:'IBI, eToro, Interactive Brokers'},
+    {id:'keren',   emoji:'📈', title:'קרן השתלמות',       sub:'אלטשולר, מנורה, הראל ועוד'},
+    {id:'pension', emoji:'🏛️', title:'פנסיה',             sub:'דוח שנתי / רבעוני'},
+  ];
+
   return (
     <div>
+      {stage==='type'&&(
+        <div>
+          <div className="card" style={{padding:20,marginBottom:14}}>
+            <p style={{fontSize:16,fontWeight:700,margin:'0 0 4px'}}>📸 סריקת צילום מסך</p>
+            <p style={{fontSize:13,color:'#6B7280',margin:'0 0 16px'}}>בחר מה להעלות:</p>
+            {typeOptions.map(o=>(
+              <button key={o.id} onClick={()=>chooseType(o.id)} style={{
+                width:'100%',display:'flex',alignItems:'center',gap:14,padding:'14px',
+                border:'1px solid #e5e7eb',borderRadius:14,background:'white',cursor:'pointer',
+                marginBottom:10,textAlign:'right'}}>
+                <span style={{fontSize:30,flexShrink:0}}>{o.emoji}</span>
+                <div>
+                  <p style={{margin:0,fontWeight:700,fontSize:14,color:'#111'}}>{o.title}</p>
+                  <p style={{margin:'2px 0 0',fontSize:12,color:'#9CA3AF'}}>{o.sub}</p>
+                </div>
+                <span style={{marginRight:'auto',color:'#d1d5db',fontSize:18}}>›</span>
+              </button>
+            ))}
+          </div>
+          <div className="card" style={{padding:14,background:'#fffbeb',border:'1px solid #fde68a'}}>
+            <p style={{fontSize:12,color:'#78350f',margin:0}}>
+              💡 <strong>טיפ:</strong> צלם ממסך מחשב לדיוק גבוה יותר. OCR עברית + אנגלית.
+              אם הזיהוי לא מושלם — תוכל לתקן ידנית לפני אישור.
+            </p>
+          </div>
+        </div>
+      )}
+
       {stage==='upload'&&(
         <div>
+          <button onClick={()=>setStage('type')} style={{border:'none',background:'none',color:'#22C55E',
+            fontSize:14,fontWeight:700,cursor:'pointer',marginBottom:12,padding:0}}>
+            ← חזור
+          </button>
           <div className="card" style={{padding:28,textAlign:'center'}}>
-            <div style={{fontSize:48,marginBottom:12}}>📸</div>
-            <p style={{fontSize:17,fontWeight:700,marginBottom:8}}>העלה צילום מסך</p>
-            <p style={{fontSize:13,color:'#6B7280',marginBottom:20,lineHeight:1.6}}>
-              צלם את מסך העסקאות בבנק / בחשבון ההשקעות<br/>
-              המערכת תנסה לזהות עסקאות אוטומטית (OCR)
+            <div style={{fontSize:44,marginBottom:8}}>{typeOptions.find(o=>o.id===docType)?.emoji}</div>
+            <p style={{fontSize:16,fontWeight:700,marginBottom:6}}>{typeOptions.find(o=>o.id===docType)?.title}</p>
+            <p style={{fontSize:13,color:'#6B7280',marginBottom:20}}>
+              {typeOptions.find(o=>o.id===docType)?.sub}
             </p>
             <input ref={fileRef} type="file" accept="image/*" style={{display:'none'}}
                    onChange={e=>e.target.files[0]&&handleFile(e.target.files[0])}/>
@@ -989,15 +1094,6 @@ function ScreenshotImport({onImport}) {
                  onClick={()=>fileRef.current.click()}>
               או גרור תמונה לכאן
             </div>
-          </div>
-          <div className="card" style={{padding:14,marginTop:14,background:'#fffbeb',border:'1px solid #fde68a'}}>
-            <p style={{fontSize:13,fontWeight:700,color:'#92400e',marginBottom:6}}>💡 טיפ לצילום מסך טוב יותר:</p>
-            <ul style={{fontSize:12,color:'#78350f',margin:0,padding:'0 16px',lineHeight:1.9}}>
-              <li>צלם ממסך מחשב ולא ממובייל לדיוק גבוה יותר</li>
-              <li>ודא שהעמודות תאריך, תיאור, סכום גלויות</li>
-              <li>הפועלים: "תנועות בחשבון" → "ייצוא" ← או צלם</li>
-              <li>Max: "עסקאות" → גלול לכל העסקאות</li>
-            </ul>
           </div>
         </div>
       )}
@@ -1058,12 +1154,44 @@ function ScreenshotImport({onImport}) {
             </div>
           )}
 
+          {/* Investment result preview (keren/pension/stocks) */}
+          {invResult&&(
+            <div className="card" style={{padding:16,marginBottom:14,background:'#f0fdf4',border:'1px solid #bbf7d0'}}>
+              <p style={{fontWeight:700,fontSize:14,margin:'0 0 10px'}}>
+                {invResult.type==='stocks'?'📊 מניות שזוהו'
+                 :invResult.type==='keren'?'📈 קרן השתלמות'
+                 :'🏛️ פנסיה'}
+              </p>
+              {invResult.type==='stocks'&&invResult.holdings?.length>0&&(
+                <div>
+                  {invResult.holdings.map((h,i)=>(
+                    <div key={i} style={{display:'flex',justifyContent:'space-between',padding:'6px 0',
+                         borderBottom:'1px solid #e5e7eb',fontSize:13}}>
+                      <span style={{fontWeight:700}}>{h.symbol}</span>
+                      <span>{h.shares} יח׳ @ ${h.avgCost?.toFixed(2)}</span>
+                    </div>
+                  ))}
+                  <p style={{fontSize:11,color:'#6B7280',marginTop:8}}>⚠️ בדוק שהנתונים נכונים לפני אישור</p>
+                </div>
+              )}
+              {(invResult.type==='keren'||invResult.type==='pension')&&(
+                <div>
+                  <p style={{fontSize:20,fontWeight:800,color:'#14532d'}}>{fmtILS(invResult.value||0)}</p>
+                  {invResult.ytd!=null&&<p style={{fontSize:13,color:'#15803d'}}>תשואה YTD: {invResult.ytd>0?'+':''}{invResult.ytd}%</p>}
+                </div>
+              )}
+            </div>
+          )}
+
           <div style={{display:'flex',gap:10}}>
-            <button className="btn-secondary" onClick={()=>{setStage('upload');setParsed([]);setRows([]);setOcrErr(null);}}
+            <button className="btn-secondary" onClick={()=>{setStage('upload');setParsed([]);setRows([]);setOcrErr(null);setInvResult(null);}}
                     style={{width:'auto',padding:'14px 18px'}}>← חזור</button>
-            <button className="btn-primary" onClick={confirm}>
-              ייבא {parsed.length||rows.filter(r=>r.description).length} עסקאות ✓
-            </button>
+            {invResult
+              ? <button className="btn-primary" onClick={confirmInv}>שמור נתונים ✓</button>
+              : <button className="btn-primary" onClick={confirmBank}>
+                  ייבא {parsed.length||rows.filter(r=>r.description).length} עסקאות ✓
+                </button>
+            }
           </div>
         </div>
       )}
@@ -1071,10 +1199,8 @@ function ScreenshotImport({onImport}) {
       {stage==='done'&&(
         <div className="card" style={{padding:40,textAlign:'center'}}>
           <div style={{fontSize:56,marginBottom:12}}>🎉</div>
-          <p style={{fontSize:18,fontWeight:800,marginBottom:8}}>הצילום יובא!</p>
-          <button className="btn-primary" onClick={()=>{setStage('upload');setImgUrl(null);setParsed([]);setRows([]);}}>
-            העלה צילום נוסף
-          </button>
+          <p style={{fontSize:18,fontWeight:800,marginBottom:8}}>הנתונים נשמרו!</p>
+          <button className="btn-primary" onClick={reset}>סרוק צילום נוסף</button>
         </div>
       )}
     </div>
@@ -1082,13 +1208,13 @@ function ScreenshotImport({onImport}) {
 }
 
 /* ── EXCEL IMPORT ── */
-function ImportTab({onImport}) {
+function ImportTab({onImport, onUpdateInv}) {
   const [method,setMethod]=useState('choose'); // choose | excel | screenshot | connect
   if(method==='screenshot') return (
     <div style={{padding:16}}>
       <button onClick={()=>setMethod('choose')} style={{border:'none',background:'none',color:'#22C55E',
         fontSize:14,fontWeight:700,cursor:'pointer',marginBottom:12,padding:0}}>← חזור</button>
-      <ScreenshotImport onImport={txs=>{onImport(txs);}}/>
+      <ScreenshotImport onImport={txs=>{onImport(txs);}} onUpdateInvestment={onUpdateInv}/>
     </div>
   );
   if(method==='connect') return (
@@ -2689,6 +2815,33 @@ function App() {
 
   function handleAdd(tx)  { setTxs(p=>[tx,...p]); }
   function handleImport(newTxs) { setTxs(p=>[...newTxs,...p]); }
+
+  function handleUpdateInv(result) {
+    if (result.type==='keren' && result.value>0) {
+      const inv=lsGet(LS.INV,{}); inv.kerenValue=result.value;
+      if(result.ytd!=null) inv.kerenYTD=result.ytd;
+      lsSet(LS.INV,inv);
+      addSnap('kerenValue', result.value);
+    } else if (result.type==='pension' && result.value>0) {
+      const inv=lsGet(LS.INV,{}); inv.pensionValue=result.value;
+      if(result.ytd!=null) inv.pensionYTD=result.ytd;
+      lsSet(LS.INV,inv);
+      addSnap('pensionValue', result.value);
+    } else if (result.type==='stocks' && result.holdings?.length>0) {
+      const port=lsGet(LS_PORTFOLIO,{holdings:[],cash:0,history:[]});
+      const today=new Date().toISOString().split('T')[0];
+      const merged=[...port.holdings];
+      result.holdings.forEach(h=>{
+        const ex=merged.find(x=>x.symbol===h.symbol);
+        if(ex){ ex.shares=h.shares; ex.avgCost=h.avgCost; }
+        else merged.push({id:Date.now()+Math.random(),symbol:h.symbol,name:h.name||h.symbol,
+                          shares:h.shares,avgCost:h.avgCost||0,
+                          color:'#'+Math.floor(Math.random()*0xffffff).toString(16).padStart(6,'0')});
+      });
+      lsSet(LS_PORTFOLIO,{...port,holdings:merged});
+    }
+    setTab('investments');
+  }
   function handleReset()  {
     lsClear();
     localStorage.removeItem(LS_SALARY_MONTHS);
@@ -2752,7 +2905,7 @@ function App() {
                                                budgetPlan={budgetPlan}
                                                daysToCredit={daysToCredit} daysToSalary={daysToSalary}/>}
         {tab==='transactions'&& <TransactionsTab txs={txs} onAdd={handleAdd}/>}
-        {tab==='import'      && <ImportTab      onImport={handleImport}/>}
+        {tab==='import'      && <ImportTab      onImport={handleImport} onUpdateInv={handleUpdateInv}/>}
         {tab==='investments' && <InvestmentsTab profile={profile}/>}
         {tab==='settings'    && <SettingsTab    profile={profile} onReset={handleReset}
           onProfileUpdate={p=>{setProfile(p);lsSet(LS.PROFILE,p);}}
