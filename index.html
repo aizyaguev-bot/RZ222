@@ -1271,45 +1271,24 @@ function ImportTab({onImport}) {
 }
 
 /* ── LIVE PRICE HELPERS ── */
-/* Yahoo Finance — free, no API key, primary source */
-async function fetchYahooPrice(symbol) {
-  const sym = symbol.includes('.') ? symbol : symbol; // TEVA.TA already formatted
-  const url  = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=1d`;
-  const r = await fetch(url, {headers:{Accept:'application/json'}});
-  if (!r.ok) throw new Error('yahoo ' + r.status);
-  const d = await r.json();
-  const meta = d?.chart?.result?.[0]?.meta;
-  if (!meta?.regularMarketPrice || meta.regularMarketPrice <= 0) throw new Error('no price');
-  const prev = meta.chartPreviousClose || meta.previousClose || meta.regularMarketPrice;
-  const chg  = prev > 0 ? ((meta.regularMarketPrice - prev) / prev) * 100 : 0;
-  return { price: meta.regularMarketPrice, changePct: Math.round(chg * 100) / 100 };
-}
-
-/* Finnhub — fallback when user has API key */
+/* ── Finnhub: מחירי מניות חיים (דורש מפתח חינמי מ-finnhub.io) ── */
 async function fetchFinnhubQuote(symbol, apiKey) {
-  const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${apiKey}`);
-  if (!r.ok) throw new Error(r.status);
+  const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(symbol)}&token=${apiKey}`);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
   const d = await r.json();
-  if (!d || d.c <= 0) throw new Error('no data');
+  if (!d || d.c <= 0) throw new Error('no price');
   return { price: d.c, changePct: typeof d.dp === 'number' ? d.dp : 0 };
 }
 
-/* Fetch price: Yahoo first, Finnhub as fallback */
-async function fetchBestPrice(symbol, apiKey) {
-  try   { return await fetchYahooPrice(symbol); }
-  catch {
-    if (apiKey) return await fetchFinnhubQuote(symbol, apiKey);
-    throw new Error('no source');
-  }
+async function fetchFinnhubProfile(symbol, apiKey) {
+  try {
+    const r = await fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${symbol}&token=${apiKey}`);
+    const d = await r.json();
+    return d?.name || symbol;
+  } catch { return symbol; }
 }
 
 async function fetchUsdIlsRate() {
-  // Try Yahoo Finance for USD/ILS (symbol ILS=X)
-  try {
-    const q = await fetchYahooPrice('ILS=X');
-    if (q.price > 0) return Math.round((1 / q.price) * 1000) / 1000; // Yahoo returns ILS per USD
-  } catch {}
-  // fallback to open.er-api
   try {
     const r = await fetch('https://open.er-api.com/v6/latest/USD');
     const d = await r.json();
@@ -1356,7 +1335,7 @@ function PortfolioSection() {
     let ok=0;
     await Promise.all(syms.map(async sym=>{
       try {
-        const q = await fetchBestPrice(sym, key || apiKey);
+        const q = await fetchFinnhubQuote(sym, key || apiKey);
         p[sym]=q.price; c[sym]=q.changePct; ok++;
       } catch {}
     }));
@@ -1365,10 +1344,10 @@ function PortfolioSection() {
     setFetching(false);
   }
 
-  // on mount: always fetch prices (Yahoo Finance needs no key)
+  // on mount: fetch exchange rate + prices if key exists
   useEffect(()=>{
     fetchUsdIlsRate().then(r=>setUsdIls(r));
-    if(holdings.length>0) doFetch(apiKey);
+    if(apiKey && holdings.length>0) doFetch(apiKey);
   },[]);
 
   // auto-refresh every 60s when live
@@ -1386,17 +1365,11 @@ function PortfolioSection() {
     setLookup(l=>({...l,status:'loading'}));
     lookupTimer.current=setTimeout(async()=>{
       try {
-        // Try to get price + company name in parallel
-        const [priceRes, profileRes] = await Promise.allSettled([
-          fetchBestPrice(sym, apiKey),
-          apiKey
-            ? fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${apiKey}`).then(r=>r.json())
-            : Promise.reject('no key'),
+        if(!apiKey) throw new Error('no key');
+        const [q, companyName] = await Promise.all([
+          fetchFinnhubQuote(sym, apiKey),
+          fetchFinnhubProfile(sym, apiKey),
         ]);
-        if(priceRes.status!=='fulfilled') throw new Error('price failed');
-        const q=priceRes.value;
-        const companyName = profileRes.status==='fulfilled'&&profileRes.value?.name
-          ? profileRes.value.name : sym;
         setLookup({status:'found',price:q.price,name:companyName,chg:q.changePct});
         setForm(f=>({ ...f, price: q.price.toFixed(2), name: f.name||companyName }));
       } catch {
@@ -1493,29 +1466,74 @@ function PortfolioSection() {
   return (
     <div>
       {/* ── API Key panel ── */}
-      {/* Source indicator */}
-      {holdings.length>0&&!showKey&&(
-        <div style={{marginBottom:10,display:'flex',alignItems:'center',justifyContent:'space-between',
-                     background:'#f9fafb',borderRadius:12,padding:'8px 12px',fontSize:12}}>
-          <span style={{color:'#6B7280'}}>
-            {liveMode
-              ? `✅ מחירים חיים — Yahoo Finance${apiKey?' + Finnhub':''}`
-              : fetching ? '⏳ טוען מחירים...' : '📊 לחץ "רענן מחירים"'}
+      {/* ── API key setup — shown prominently when no key ── */}
+      {!apiKey && (
+        <div style={{background:'linear-gradient(135deg,#1e3a5f,#0f172a)',borderRadius:20,
+                     padding:24,marginBottom:16,color:'white'}}>
+          <p style={{fontSize:18,fontWeight:800,margin:'0 0 6px'}}>🔑 הגדרה נדרשת</p>
+          <p style={{fontSize:13,opacity:.8,margin:'0 0 20px',lineHeight:1.6}}>
+            מחירי מניות בזמן אמת דורשים מפתח API חינמי מ-Finnhub.<br/>
+            ההרשמה לוקחת פחות מ-30 שניות — חינם לגמרי.
+          </p>
+
+          <div style={{background:'rgba(255,255,255,.1)',borderRadius:14,padding:16,marginBottom:16}}>
+            {[
+              {n:1, txt:'לחץ כאן להרשמה חינמית', link:'https://finnhub.io/register'},
+              {n:2, txt:'אשר את האימייל'},
+              {n:3, txt:'העתק את המפתח מה-Dashboard'},
+              {n:4, txt:'הדבק אותו למטה 👇'},
+            ].map(s=>(
+              <div key={s.n} style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}>
+                <span style={{width:24,height:24,borderRadius:'50%',background:'#22C55E',color:'white',
+                              display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,
+                              fontWeight:800,flexShrink:0}}>{s.n}</span>
+                {s.link
+                  ? <a href={s.link} target="_blank" rel="noopener"
+                       style={{color:'#4ade80',fontWeight:700,fontSize:14,textDecoration:'underline'}}>{s.txt}</a>
+                  : <span style={{fontSize:14,opacity:.9}}>{s.txt}</span>}
+              </div>
+            ))}
+          </div>
+
+          <div style={{display:'flex',gap:8}}>
+            <input value={keyInput} onChange={e=>setKeyInput(e.target.value)}
+                   onKeyDown={e=>e.key==='Enter'&&saveKey()}
+                   placeholder="c_xxxxxxxxxxxxxxxxxxxxxxxx"
+                   style={{flex:1,background:'rgba(255,255,255,.15)',border:'1px solid rgba(255,255,255,.3)',
+                           borderRadius:12,padding:'12px 14px',color:'white',fontSize:14,
+                           direction:'ltr',fontFamily:'monospace',outline:'none'}}
+                   autoFocus/>
+            <button onClick={saveKey} disabled={!keyInput.trim()}
+                    style={{background:'#22C55E',border:'none',borderRadius:12,padding:'12px 20px',
+                            color:'white',fontWeight:800,fontSize:15,cursor:'pointer',
+                            opacity:keyInput.trim()?1:.4}}>
+              שמור ✓
+            </button>
+          </div>
+          <p style={{fontSize:11,opacity:.5,marginTop:8,direction:'ltr',textAlign:'left'}}>
+            Supported: NYSE · NASDAQ · LSE · TASE (TEVA.TA)
+          </p>
+        </div>
+      )}
+
+      {/* API key already set — small management row */}
+      {apiKey && !showKey && (
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,
+                     background:'#f0fdf4',borderRadius:12,padding:'8px 14px',fontSize:12}}>
+          <span style={{color:'#15803d',fontWeight:600}}>
+            {liveMode ? `✅ מחירים חיים · עודכן ${new Intl.DateTimeFormat('he-IL',{hour:'2-digit',minute:'2-digit'}).format(lastFetch)}`
+                      : fetching ? '⏳ טוען...' : '🔑 Finnhub מוגדר'}
           </span>
-          <button onClick={()=>setShowKey(v=>!v)}
-                  style={{border:'none',background:'none',color:'#9CA3AF',fontSize:11,cursor:'pointer',padding:'2px 4px'}}>
-            {apiKey?'🔑 Finnhub מוגדר':'+ הוסף Finnhub API'}
+          <button onClick={()=>{setShowKey(true);setKeyInput('');}}
+                  style={{border:'none',background:'none',color:'#9CA3AF',fontSize:11,cursor:'pointer'}}>
+            החלף מפתח
           </button>
         </div>
       )}
 
-      {showKey?(
-        <div className="card" style={{padding:16,marginBottom:14,background:'#f0fdf4',border:'1px solid #bbf7d0'}}>
-          <p style={{fontWeight:700,fontSize:14,margin:'0 0 6px'}}>🔑 Finnhub API Key</p>
-          <p style={{fontSize:12,color:'#6B7280',margin:'0 0 10px',lineHeight:1.6}}>
-            מפתח חינם ב-<a href="https://finnhub.io/register" target="_blank" rel="noopener"
-              style={{color:'#15803d'}}>finnhub.io/register</a> — תומך: NYSE, NASDAQ, TASE (סימול.TA)
-          </p>
+      {showKey && apiKey && (
+        <div className="card" style={{padding:14,marginBottom:14,background:'#f0fdf4',border:'1px solid #bbf7d0'}}>
+          <p style={{fontWeight:700,fontSize:13,margin:'0 0 8px'}}>🔑 החלפת מפתח Finnhub</p>
           <div style={{display:'flex',gap:8}}>
             <input className="input" placeholder="c_xxxxxxxxxxxxxxxx" value={keyInput}
                    onChange={e=>setKeyInput(e.target.value)}
@@ -1524,11 +1542,10 @@ function PortfolioSection() {
             <button className="btn-primary" onClick={saveKey} style={{width:'auto',padding:'12px 16px'}}>שמור</button>
             <button className="btn-secondary" onClick={()=>setShowKey(false)} style={{width:'auto',padding:'12px 12px'}}>✕</button>
           </div>
-          <p style={{fontSize:11,color:'#9CA3AF',marginTop:8}}>
-            ישראל: TEVA, CHKP, NICE, ICL | ת"א: TEVA.TA, NICE.TA
-          </p>
         </div>
-      ):(
+      )}
+
+      {(
         !apiKey&&holdings.length>0&&(
           <div onClick={()=>setShowKey(true)} style={{background:'#fffbeb',border:'1px solid #fde68a',
             borderRadius:14,padding:'12px 14px',marginBottom:14,cursor:'pointer',
