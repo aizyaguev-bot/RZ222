@@ -13,8 +13,9 @@
   <!-- Tailwind - synchronous so it scans all JSX class names -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- XLSX + Tesseract - large, only needed for import tab; defer so they don't block render -->
-  <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
-  <script src="https://unpkg.com/tesseract.js@4/dist/tesseract.min.js" defer></script>
+  <!-- XLSX loads synchronously — needed immediately when user opens Import tab -->
+  <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <!-- Tesseract removed: in-browser OCR quality too poor for financial docs -->
   <script>tailwind.config={theme:{extend:{fontFamily:{sans:['Heebo','sans-serif']}}}};</script>
   <style>
     *{font-family:'Heebo','Segoe UI',sans-serif;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
@@ -875,19 +876,14 @@ function TransactionsTab({txs,onAdd,onDelete}) {
 
 /* ── OCR HELPERS ── */
 function parseDateIL(s) {
-  // handles DD/MM/YYYY  DD.MM.YYYY  DD-MM-YYYY  YYYY-MM-DD
   const clean=s.replace(/[.\-]/g,'/');
   const parts=clean.split('/');
   if(parts.length===3) {
     const [a,b,c]=parts.map(Number);
     const yr=c>31?c:(a>31?a:null);
-    if(yr) {
-      const [d,m]=c>31?[a,b]:[b,a];
-      const dt=new Date(yr,m-1,d);
-      if(!isNaN(dt)) return dt.toISOString().split('T')[0];
-    }
+    if(yr){const[d,m]=c>31?[a,b]:[b,a];const dt=new Date(yr,m-1,d);if(!isNaN(dt))return dt.toISOString().split('T')[0];}
   }
-  const d=new Date(s); return isNaN(d)?null:d.toISOString().split('T')[0];
+  const d=new Date(s);return isNaN(d)?null:d.toISOString().split('T')[0];
 }
 function parseBankOCR(text) {
   const DATE_RE  = /\b(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}|\d{4}[./\-]\d{2}[./\-]\d{2})\b/g;
@@ -918,60 +914,11 @@ function parseBankOCR(text) {
 
 /* ── PORTFOLIO/KEREN/PENSION OCR PARSERS ── */
 
-// Detect document type from OCR text
-function detectDocType(text) {
-  const t = text.toLowerCase();
-  if (/קרן השתלמות|gemel|gml|השתלמות/.test(t)) return 'keren';
-  if (/pension|פנסיה|פנסיוני|קרן פנסיה/.test(t)) return 'pension';
-  if (/portfolio|holdings|position|מניות|נייר ערך|ticker|symbol/.test(t)) return 'stocks';
-  if (/account|חשבון|יתרה|balance/.test(t)) return 'bank';
-  return 'bank'; // default to bank transactions
-}
-
-// Parse a brokerage/portfolio screenshot
-// Looks for: TICKER  SHARES  PRICE  VALUE patterns
-function parsePortfolioOCR(text) {
-  const lines = text.split('\n').map(l=>l.trim()).filter(l=>l.length>3);
-  const holdings = [];
-  // Common ticker pattern: 2-5 uppercase letters (optionally .TA/.US)
-  const TICKER_RE = /\b([A-Z]{1,5}(?:\.[A-Z]{2})?)\b/g;
-  const NUM_RE    = /[\d,]+\.?\d*/g;
-  for (const line of lines) {
-    const tickers = [...(line.matchAll(TICKER_RE)||[])].map(m=>m[1]);
-    const nums    = [...(line.matchAll(NUM_RE)||[])].map(m=>parseFloat(m[0].replace(/,/g,''))).filter(n=>n>0&&n<1e9);
-    if (!tickers.length || nums.length < 2) continue;
-    // Skip lines that are just headers (DATE, NAME, TOTAL etc.)
-    const sym = tickers[0];
-    if (['THE','AND','FOR','NET','ILS','USD','EUR','GBP','THE','ALL','NEW'].includes(sym)) continue;
-    // Heuristic: first number is shares (small), second is price, last large is value
-    nums.sort((a,b)=>a-b);
-    const shares = nums[0];      // smallest = shares count
-    const price  = nums[Math.floor(nums.length/2)]; // middle = price
-    if (shares <= 0 || price <= 0) continue;
-    holdings.push({ symbol: sym, shares, avgCost: price, name: sym });
-  }
-  return holdings;
-}
-
-// Parse a keren/pension statement — look for a large ₪ value
-function parseInvestmentAccountOCR(text) {
-  const NUM_RE = /[\d,]+\.?\d*/g;
-  const nums = [...(text.matchAll(NUM_RE)||[])].map(m=>parseFloat(m[0].replace(/,/g,''))).filter(n=>n>1000&&n<1e10);
-  if (!nums.length) return null;
-  // The largest number is likely the current value
-  const value = Math.max(...nums);
-  // Look for a % return
-  const pctMatch = text.match(/([+-]?\d+\.?\d*)%/);
-  const ytd = pctMatch ? parseFloat(pctMatch[1]) : null;
-  return { value: Math.round(value), ytd };
-}
-
-/* ── SCREENSHOT IMPORT ── */
+/* ── SCREENSHOT GUIDED ENTRY (no OCR — image shown alongside form) ── */
 function ScreenshotImport({onImport, onUpdateInvestment}) {
   const [imgUrl,   setImgUrl]   = useState(null);
-  const [docType,  setDocType]  = useState(null); // bank|stocks|keren|pension
-  const [stage,    setStage]    = useState('type'); // type|ocr|preview|done
-  const [prog,     setProg]     = useState(0);
+  const [docType,  setDocType]  = useState(null);
+  const [stage,    setStage]    = useState('type'); // type|form|done
   const [parsed,   setParsed]   = useState([]);
   const [ocrErr,   setOcrErr]   = useState(null);
   const [rows,     setRows]     = useState([]);
