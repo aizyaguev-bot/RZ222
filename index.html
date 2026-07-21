@@ -1530,22 +1530,21 @@ function PortfolioSection() {
     const shares=parseFloat(form.shares), price=parseFloat(form.price);
     if(!form.symbol||isNaN(shares)||isNaN(price)||shares<=0||price<=0) return;
     const cost=Math.round(shares*price*100)/100;
-    // find existing holding for same symbol
     const existing=holdings.find(h=>h.symbol.toUpperCase()===form.symbol.toUpperCase());
     let newHoldings;
     if (existing) {
-      // average down/up
       const totalShares=existing.shares+shares;
       const avgCost=Math.round(((existing.avgCost*existing.shares)+(price*shares))/totalShares*100)/100;
       newHoldings=holdings.map(h=>h.id===existing.id?{...h,shares:totalShares,avgCost}:h);
     } else {
       newHoldings=[...holdings,{id:Date.now(),symbol:form.symbol.toUpperCase(),
-        name:form.name||form.symbol.toUpperCase(),shares,avgCost:price,color:'#'+Math.floor(Math.random()*0xffffff).toString(16).padStart(6,'0')}];
+        name:form.name||form.symbol.toUpperCase(),shares,avgCost:price,
+        color:'#'+Math.floor(Math.random()*0xffffff).toString(16).padStart(6,'0')}];
     }
-    const newCash=Math.round((cash-cost)*100)/100;
+    // Cash is NOT deducted — stocks are bought with the user's own external money
     const hist=[{id:Date.now(),type:'buy',symbol:form.symbol.toUpperCase(),shares,price,cost,date:form.date},...history];
-    setHoldings(newHoldings); setCash(newCash); setHistory(hist);
-    persist(newHoldings,newCash,hist);
+    setHoldings(newHoldings); setHistory(hist);
+    persist(newHoldings, cash, hist);
     setForm({symbol:'',name:'',shares:'',price:'',date:new Date().toISOString().split('T')[0]});
     setMode('view');
   }
@@ -1560,10 +1559,10 @@ function PortfolioSection() {
     let newHoldings;
     if(shares===h.shares) newHoldings=holdings.filter(x=>x.id!==h.id);
     else newHoldings=holdings.map(x=>x.id===h.id?{...x,shares:Math.round((x.shares-shares)*100000)/100000}:x);
-    const newCash=Math.round((cash+proceeds)*100)/100;
+    // Cash is NOT updated on sell — proceeds go back to user's real account
     const hist=[{id:Date.now(),type:'sell',symbol:h.symbol,shares,price,proceeds,pl,date:sellForm.date},...history];
-    setHoldings(newHoldings); setCash(newCash); setHistory(hist);
-    persist(newHoldings,newCash,hist);
+    setHoldings(newHoldings); setHistory(hist);
+    persist(newHoldings, cash, hist);
     setSellForm({holdingId:'',shares:'',price:'',date:new Date().toISOString().split('T')[0]});
     setMode('view');
   }
@@ -1757,7 +1756,8 @@ function PortfolioSection() {
       {/* Deposit panel */}
       {mode==='deposit'&&(
         <div className="card" style={{padding:16,marginBottom:16}} >
-          <p style={{fontWeight:700,marginBottom:12}}>💵 הפקד מזומן ($)</p>
+          <p style={{fontWeight:700,marginBottom:4}}>💵 רשום מזומן זמין ($)</p>
+          <p style={{fontSize:12,color:'#6B7280',marginBottom:12}}>כמה $ יש לך פנוי להשקעה בברוקר</p>
           <div style={{display:'flex',gap:10}}>
             <input className="input input-num" type="number" placeholder="סכום $" value={depositAmt}
                    onChange={e=>setDepositAmt(e.target.value)} style={{flex:1}} autoFocus/>
@@ -1844,8 +1844,6 @@ function PortfolioSection() {
                     ${(parseFloat(form.shares||0)*parseFloat(form.price||0)).toFixed(2)}
                   </span>
                   <span style={{fontSize:12,color:'#6B7280',marginRight:8}}> · {fmtILS(parseFloat(form.shares||0)*parseFloat(form.price||0)*usdIls)}</span>
-                  {cash>0&&parseFloat(form.shares)*parseFloat(form.price)*usdIls>cash&&
-                    <span style={{color:'#dc2626',fontSize:11,display:'block'}}>⚠️ חורג מהמזומן הנזיל</span>}
                 </div>
               </div>
             )}
