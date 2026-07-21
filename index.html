@@ -1328,27 +1328,41 @@ function PortfolioSection() {
   const lookupTimer = useRef(null);
 
   async function doFetch(key) {
-    if (!holdings.length) return;
+    const k = key || apiKey;
+    if (!k) { setFetchErr('אין מפתח API — הזן מפתח Finnhub'); return; }
+    if (!holdings.length) { setFetchErr(null); return; }
     setFetching(true); setFetchErr(null);
     const syms=[...new Set(holdings.map(h=>h.symbol))];
     const p={}, c={};
-    let ok=0;
-    await Promise.all(syms.map(async sym=>{
+    let ok=0, lastErr='';
+    for (const sym of syms) {
       try {
-        const q = await fetchFinnhubQuote(sym, key || apiKey);
+        const q = await fetchFinnhubQuote(sym, k);
         p[sym]=q.price; c[sym]=q.changePct; ok++;
-      } catch {}
-    }));
-    if(ok>0){ setLivePrices(p); setDayChanges(c); setLiveMode(true); setLastFetch(new Date()); }
-    else setFetchErr('לא ניתן לטעון מחירים — בדוק חיבור אינטרנט');
+      } catch(e) { lastErr = e.message || String(e); }
+    }
+    if(ok>0){
+      setLivePrices(p); setDayChanges(c); setLiveMode(true); setLastFetch(new Date());
+      setFetchErr(null);
+    } else {
+      const hint = lastErr.includes('401')||lastErr.includes('403') ? 'מפתח API שגוי'
+                 : lastErr.includes('429') ? 'יותר מדי בקשות — נסה שוב עוד דקה'
+                 : 'בדוק חיבור אינטרנט ומפתח API';
+      setFetchErr(`שגיאה: ${hint} (${lastErr})`);
+    }
     setFetching(false);
   }
 
-  // on mount: fetch exchange rate + prices if key exists
+  // on mount: fetch exchange rate + prices
   useEffect(()=>{
     fetchUsdIlsRate().then(r=>setUsdIls(r));
     if(apiKey && holdings.length>0) doFetch(apiKey);
   },[]);
+
+  // re-fetch when holdings change (new stock added) and key exists
+  useEffect(()=>{
+    if(apiKey && holdings.length>0) doFetch(apiKey);
+  },[holdings.length]);
 
   // auto-refresh every 60s when live
   useEffect(()=>{
@@ -1379,10 +1393,24 @@ function PortfolioSection() {
     return()=>clearTimeout(lookupTimer.current);
   },[form.symbol, apiKey]);
 
-  function saveKey(){
+  async function saveKey(){
     const k=keyInput.trim(); if(!k) return;
-    lsSet(LS.FINNHUB,k); setApiKey(k); setKeyInput(''); setShowKey(false);
-    doFetch(k);
+    // Test the key with a known liquid stock before saving
+    setFetching(true); setFetchErr(null);
+    try {
+      await fetchFinnhubQuote('AAPL', k); // quick test
+      lsSet(LS.FINNHUB, k);
+      setApiKey(k); setKeyInput(''); setShowKey(false);
+      setFetching(false);
+      doFetch(k);
+    } catch(e) {
+      setFetching(false);
+      const msg = String(e.message||e);
+      setFetchErr(
+        msg.includes('401')||msg.includes('403') ? '⛔ מפתח שגוי — בדוק שהעתקת נכון מ-finnhub.io'
+        : `⛔ שגיאה בבדיקת המפתח: ${msg}`
+      );
+    }
   }
   function clearKey(){lsSet(LS.FINNHUB,'');setApiKey('');setLiveMode(false);setLivePrices({});setDayChanges({});}
 
@@ -1510,8 +1538,20 @@ function PortfolioSection() {
               שמור ✓
             </button>
           </div>
+          {fetchErr&&(
+            <div style={{marginTop:10,background:'rgba(239,68,68,.2)',borderRadius:10,padding:'10px 14px',
+                         fontSize:13,color:'#fca5a5',direction:'rtl'}}>
+              {fetchErr}
+            </div>
+          )}
+          {fetching&&(
+            <p style={{marginTop:10,fontSize:13,opacity:.7,textAlign:'center'}}>
+              <span className="spin" style={{display:'inline-block',marginLeft:6}}>⏳</span>
+              בודק מפתח...
+            </p>
+          )}
           <p style={{fontSize:11,opacity:.5,marginTop:8,direction:'ltr',textAlign:'left'}}>
-            Supported: NYSE · NASDAQ · LSE · TASE (TEVA.TA)
+            Supported: NYSE · NASDAQ · LSE · Israeli stocks (TEVA, CHKP, NICE, ICL)
           </p>
         </div>
       )}
