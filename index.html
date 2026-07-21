@@ -1271,19 +1271,51 @@ function ImportTab({onImport}) {
 }
 
 /* ── LIVE PRICE HELPERS ── */
+/* Yahoo Finance — free, no API key, primary source */
+async function fetchYahooPrice(symbol) {
+  const sym = symbol.includes('.') ? symbol : symbol; // TEVA.TA already formatted
+  const url  = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=1d`;
+  const r = await fetch(url, {headers:{Accept:'application/json'}});
+  if (!r.ok) throw new Error('yahoo ' + r.status);
+  const d = await r.json();
+  const meta = d?.chart?.result?.[0]?.meta;
+  if (!meta?.regularMarketPrice || meta.regularMarketPrice <= 0) throw new Error('no price');
+  const prev = meta.chartPreviousClose || meta.previousClose || meta.regularMarketPrice;
+  const chg  = prev > 0 ? ((meta.regularMarketPrice - prev) / prev) * 100 : 0;
+  return { price: meta.regularMarketPrice, changePct: Math.round(chg * 100) / 100 };
+}
+
+/* Finnhub — fallback when user has API key */
 async function fetchFinnhubQuote(symbol, apiKey) {
   const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${apiKey}`);
   if (!r.ok) throw new Error(r.status);
   const d = await r.json();
   if (!d || d.c <= 0) throw new Error('no data');
-  return { price: d.c, changePct: typeof d.dp === 'number' ? d.dp : 0, prevClose: d.pc };
+  return { price: d.c, changePct: typeof d.dp === 'number' ? d.dp : 0 };
 }
+
+/* Fetch price: Yahoo first, Finnhub as fallback */
+async function fetchBestPrice(symbol, apiKey) {
+  try   { return await fetchYahooPrice(symbol); }
+  catch {
+    if (apiKey) return await fetchFinnhubQuote(symbol, apiKey);
+    throw new Error('no source');
+  }
+}
+
 async function fetchUsdIlsRate() {
+  // Try Yahoo Finance for USD/ILS (symbol ILS=X)
+  try {
+    const q = await fetchYahooPrice('ILS=X');
+    if (q.price > 0) return Math.round((1 / q.price) * 1000) / 1000; // Yahoo returns ILS per USD
+  } catch {}
+  // fallback to open.er-api
   try {
     const r = await fetch('https://open.er-api.com/v6/latest/USD');
     const d = await r.json();
-    return d?.rates?.ILS ?? 3.72;
-  } catch { return 3.72; }
+    if (d?.rates?.ILS) return d.rates.ILS;
+  } catch {}
+  return 3.72;
 }
 
 /* ── INVESTMENTS TAB ── */
@@ -1323,18 +1355,20 @@ function PortfolioSection() {
     const p={}, c={};
     let ok=0;
     await Promise.all(syms.map(async sym=>{
-      try { const q=await fetchFinnhubQuote(sym,key); p[sym]=q.price; c[sym]=q.changePct; ok++; }
-      catch{}
+      try {
+        const q = await fetchBestPrice(sym, key || apiKey);
+        p[sym]=q.price; c[sym]=q.changePct; ok++;
+      } catch {}
     }));
     if(ok>0){ setLivePrices(p); setDayChanges(c); setLiveMode(true); setLastFetch(new Date()); }
-    else setFetchErr('לא ניתן לטעון מחירים — בדוק מפתח API');
+    else setFetchErr('לא ניתן לטעון מחירים — בדוק חיבור אינטרנט');
     setFetching(false);
   }
 
-  // on mount: fetch exchange rate + prices if key saved
+  // on mount: always fetch prices (Yahoo Finance needs no key)
   useEffect(()=>{
     fetchUsdIlsRate().then(r=>setUsdIls(r));
-    if(apiKey) doFetch(apiKey);
+    if(holdings.length>0) doFetch(apiKey);
   },[]);
 
   // auto-refresh every 60s when live
@@ -1348,27 +1382,23 @@ function PortfolioSection() {
   useEffect(()=>{
     const sym=form.symbol.trim();
     if(!sym){ setLookup({status:'idle',price:null,name:'',chg:null}); return; }
-    if(!apiKey){ setLookup({status:'no-key',price:null,name:'',chg:null}); return; }
     clearTimeout(lookupTimer.current);
     setLookup(l=>({...l,status:'loading'}));
     lookupTimer.current=setTimeout(async()=>{
       try {
-        // fetch quote + company profile in parallel
-        const [quoteRes, profileRes] = await Promise.allSettled([
-          fetchFinnhubQuote(sym, apiKey),
-          fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${apiKey}`).then(r=>r.json()),
+        // Try to get price + company name in parallel
+        const [priceRes, profileRes] = await Promise.allSettled([
+          fetchBestPrice(sym, apiKey),
+          apiKey
+            ? fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${apiKey}`).then(r=>r.json())
+            : Promise.reject('no key'),
         ]);
-        if(quoteRes.status!=='fulfilled') throw new Error('quote failed');
-        const q=quoteRes.value;
+        if(priceRes.status!=='fulfilled') throw new Error('price failed');
+        const q=priceRes.value;
         const companyName = profileRes.status==='fulfilled'&&profileRes.value?.name
           ? profileRes.value.name : sym;
         setLookup({status:'found',price:q.price,name:companyName,chg:q.changePct});
-        // auto-fill price and name
-        setForm(f=>({
-          ...f,
-          price: q.price.toFixed(2),
-          name:  f.name||companyName,
-        }));
+        setForm(f=>({ ...f, price: q.price.toFixed(2), name: f.name||companyName }));
       } catch {
         setLookup({status:'error',price:null,name:'',chg:null});
       }
@@ -1463,6 +1493,22 @@ function PortfolioSection() {
   return (
     <div>
       {/* ── API Key panel ── */}
+      {/* Source indicator */}
+      {holdings.length>0&&!showKey&&(
+        <div style={{marginBottom:10,display:'flex',alignItems:'center',justifyContent:'space-between',
+                     background:'#f9fafb',borderRadius:12,padding:'8px 12px',fontSize:12}}>
+          <span style={{color:'#6B7280'}}>
+            {liveMode
+              ? `✅ מחירים חיים — Yahoo Finance${apiKey?' + Finnhub':''}`
+              : fetching ? '⏳ טוען מחירים...' : '📊 לחץ "רענן מחירים"'}
+          </span>
+          <button onClick={()=>setShowKey(v=>!v)}
+                  style={{border:'none',background:'none',color:'#9CA3AF',fontSize:11,cursor:'pointer',padding:'2px 4px'}}>
+            {apiKey?'🔑 Finnhub מוגדר':'+ הוסף Finnhub API'}
+          </button>
+        </div>
+      )}
+
       {showKey?(
         <div className="card" style={{padding:16,marginBottom:14,background:'#f0fdf4',border:'1px solid #bbf7d0'}}>
           <p style={{fontWeight:700,fontSize:14,margin:'0 0 6px'}}>🔑 Finnhub API Key</p>
@@ -1513,20 +1559,12 @@ function PortfolioSection() {
             )}
           </div>
           <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:6}}>
-            {apiKey?(
-              <button onClick={()=>doFetch(apiKey)} disabled={fetching}
-                      style={{background:'rgba(255,255,255,.2)',border:'none',borderRadius:10,
-                              padding:'7px 12px',color:'white',cursor:'pointer',fontSize:12,fontWeight:700}}>
-                <span className={fetching?'spin':''} style={{display:'inline-block',marginLeft:4}}>🔄</span>
-                {fetching?'טוען...':'רענן'}
-              </button>
-            ):(
-              <button onClick={()=>setShowKey(true)}
-                      style={{background:'rgba(255,255,255,.15)',border:'1px solid rgba(255,255,255,.3)',
-                              borderRadius:10,padding:'7px 12px',color:'white',cursor:'pointer',fontSize:12}}>
-                🔑 הגדר API
-              </button>
-            )}
+            <button onClick={()=>doFetch(apiKey)} disabled={fetching}
+                  style={{background:'rgba(255,255,255,.2)',border:'none',borderRadius:10,
+                          padding:'7px 12px',color:'white',cursor:'pointer',fontSize:12,fontWeight:700}}>
+            <span className={fetching?'spin':''} style={{display:'inline-block',marginLeft:4}}>🔄</span>
+            {fetching?'טוען...':'רענן מחירים'}
+          </button>
             {liveMode&&(
               <span style={{background:'#22C55E',fontSize:10,padding:'2px 7px',borderRadius:10,
                             fontWeight:700,color:'white'}}>🔴 LIVE</span>
