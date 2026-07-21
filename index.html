@@ -851,94 +851,567 @@ function ImportTab({onImport}) {
 }
 
 /* ── INVESTMENTS TAB ── */
+/* ── STOCK PORTFOLIO (buy/sell/liquid) ── */
+const LS_PORTFOLIO = 'fil_portfolio';
+
+function PortfolioSection() {
+  const [holdings, setHoldings] = useState(()=>lsGet(LS_PORTFOLIO,{holdings:[],cash:0}).holdings||[]);
+  const [cash,     setCash]     = useState(()=>lsGet(LS_PORTFOLIO,{holdings:[],cash:0}).cash||0);
+  const [mode,     setMode]     = useState('view'); // view | buy | sell | deposit
+  const [form,     setForm]     = useState({symbol:'',name:'',shares:'',price:'',date:new Date().toISOString().split('T')[0]});
+  const [sellForm, setSellForm] = useState({holdingId:'',shares:'',price:'',date:new Date().toISOString().split('T')[0]});
+  const [depositAmt, setDepositAmt] = useState('');
+  const [subTab,   setSubTab]   = useState('holdings'); // holdings | history
+  const [history,  setHistory]  = useState(()=>lsGet(LS_PORTFOLIO,{}).history||[]);
+
+  function persist(h,c,hist) {
+    lsSet(LS_PORTFOLIO,{holdings:h,cash:c,history:hist||history});
+  }
+
+  function deposit() {
+    const amt=parseFloat(depositAmt); if(isNaN(amt)||amt<=0) return;
+    const newCash=Math.round((cash+amt)*100)/100;
+    const hist=[{id:Date.now(),type:'deposit',amount:amt,date:new Date().toISOString().split('T')[0]},...history];
+    setCash(newCash); setHistory(hist); persist(holdings,newCash,hist);
+    setDepositAmt(''); setMode('view');
+  }
+
+  function buy() {
+    const shares=parseFloat(form.shares), price=parseFloat(form.price);
+    if(!form.symbol||isNaN(shares)||isNaN(price)||shares<=0||price<=0) return;
+    const cost=Math.round(shares*price*100)/100;
+    // find existing holding for same symbol
+    const existing=holdings.find(h=>h.symbol.toUpperCase()===form.symbol.toUpperCase());
+    let newHoldings;
+    if (existing) {
+      // average down/up
+      const totalShares=existing.shares+shares;
+      const avgCost=Math.round(((existing.avgCost*existing.shares)+(price*shares))/totalShares*100)/100;
+      newHoldings=holdings.map(h=>h.id===existing.id?{...h,shares:totalShares,avgCost}:h);
+    } else {
+      newHoldings=[...holdings,{id:Date.now(),symbol:form.symbol.toUpperCase(),
+        name:form.name||form.symbol.toUpperCase(),shares,avgCost:price,color:'#'+Math.floor(Math.random()*0xffffff).toString(16).padStart(6,'0')}];
+    }
+    const newCash=Math.round((cash-cost)*100)/100;
+    const hist=[{id:Date.now(),type:'buy',symbol:form.symbol.toUpperCase(),shares,price,cost,date:form.date},...history];
+    setHoldings(newHoldings); setCash(newCash); setHistory(hist);
+    persist(newHoldings,newCash,hist);
+    setForm({symbol:'',name:'',shares:'',price:'',date:new Date().toISOString().split('T')[0]});
+    setMode('view');
+  }
+
+  function sell() {
+    const h=holdings.find(x=>x.id===parseInt(sellForm.holdingId));
+    if(!h) return;
+    const shares=parseFloat(sellForm.shares), price=parseFloat(sellForm.price);
+    if(isNaN(shares)||isNaN(price)||shares<=0||price<=0||shares>h.shares) return;
+    const proceeds=Math.round(shares*price*100)/100;
+    const pl=Math.round((price-h.avgCost)*shares*100)/100;
+    let newHoldings;
+    if(shares===h.shares) newHoldings=holdings.filter(x=>x.id!==h.id);
+    else newHoldings=holdings.map(x=>x.id===h.id?{...x,shares:Math.round((x.shares-shares)*100000)/100000}:x);
+    const newCash=Math.round((cash+proceeds)*100)/100;
+    const hist=[{id:Date.now(),type:'sell',symbol:h.symbol,shares,price,proceeds,pl,date:sellForm.date},...history];
+    setHoldings(newHoldings); setCash(newCash); setHistory(hist);
+    persist(newHoldings,newCash,hist);
+    setSellForm({holdingId:'',shares:'',price:'',date:new Date().toISOString().split('T')[0]});
+    setMode('view');
+  }
+
+  const totalCost = holdings.reduce((s,h)=>s+h.shares*h.avgCost,0);
+  // We don't have live prices here unless user entered current price - show cost basis
+  const donutData = holdings.map(h=>({name:h.symbol,value:Math.round(h.shares*h.avgCost*100)/100,color:h.color,emoji:''}));
+
+  return (
+    <div>
+      {/* Summary card */}
+      <div style={{background:'linear-gradient(135deg,#052e16,#14532d)',padding:'16px 20px',borderRadius:16,marginBottom:16}}>
+        <p style={{color:'rgba(255,255,255,.7)',fontSize:12,margin:'0 0 4px'}}>📊 תיק מניות</p>
+        <p style={{color:'white',fontSize:28,fontWeight:800,margin:'0 0 12px'}}>{fmtILS(totalCost+cash)}</p>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+          <div style={{background:'rgba(255,255,255,.12)',borderRadius:10,padding:'10px 12px'}}>
+            <p style={{color:'rgba(255,255,255,.6)',fontSize:11,margin:'0 0 3px'}}>מניות (עלות)</p>
+            <p style={{color:'white',fontSize:16,fontWeight:700,margin:0}}>{fmtILS(totalCost)}</p>
+          </div>
+          <div style={{background:'rgba(255,255,255,.12)',borderRadius:10,padding:'10px 12px'}}>
+            <p style={{color:'rgba(255,255,255,.6)',fontSize:11,margin:'0 0 3px'}}>💵 כסף נזיל</p>
+            <p style={{color:'white',fontSize:16,fontWeight:700,margin:0}}>{fmtILS(cash)}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Action buttons */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:16}}>
+        {[
+          {id:'deposit',label:'💵 הפקד',    bg:'#eff6ff',color:'#1e40af'},
+          {id:'buy',    label:'🟢 קנייה',   bg:'#f0fdf4',color:'#15803d'},
+          {id:'sell',   label:'🔴 מכירה',   bg:'#fef2f2',color:'#b91c1c'},
+        ].map(a=>(
+          <button key={a.id} onClick={()=>setMode(mode===a.id?'view':a.id)} style={{
+            border:`2px solid ${mode===a.id?a.color:'transparent'}`,
+            background:a.bg,color:a.color,borderRadius:12,padding:'10px 4px',
+            fontSize:13,fontWeight:700,cursor:'pointer'}}>
+            {a.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Deposit panel */}
+      {mode==='deposit'&&(
+        <div className="card" style={{padding:16,marginBottom:16}} >
+          <p style={{fontWeight:700,marginBottom:12}}>💵 הפקד כסף נזיל</p>
+          <div style={{display:'flex',gap:10}}>
+            <input className="input input-num" type="number" placeholder="סכום ₪" value={depositAmt}
+                   onChange={e=>setDepositAmt(e.target.value)} style={{flex:1}} autoFocus/>
+            <button className="btn-primary" onClick={deposit} style={{width:'auto',padding:'13px 18px'}}>הפקד</button>
+            <button className="btn-secondary" onClick={()=>setMode('view')} style={{width:'auto',padding:'13px 14px'}}>ביטול</button>
+          </div>
+        </div>
+      )}
+
+      {/* Buy panel */}
+      {mode==='buy'&&(
+        <div className="card" style={{padding:16,marginBottom:16}}>
+          <p style={{fontWeight:700,marginBottom:12}}>🟢 רכישת נייר ערך</p>
+          <div style={{display:'flex',flexDirection:'column',gap:12}}>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+              <div>
+                <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>סימול (Ticker)</label>
+                <input className="input" style={{textTransform:'uppercase',direction:'ltr'}}
+                       placeholder="NVDA" value={form.symbol}
+                       onChange={e=>setForm(f=>({...f,symbol:e.target.value.toUpperCase()}))}/>
+              </div>
+              <div>
+                <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>שם</label>
+                <input className="input" placeholder="NVIDIA" value={form.name}
+                       onChange={e=>setForm(f=>({...f,name:e.target.value}))}/>
+              </div>
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+              <div>
+                <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>כמות מניות</label>
+                <input className="input input-num" type="number" step="0.001" placeholder="10"
+                       value={form.shares} onChange={e=>setForm(f=>({...f,shares:e.target.value}))}/>
+              </div>
+              <div>
+                <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>מחיר לרכישה</label>
+                <input className="input input-num" type="number" step="0.01" placeholder="875.00"
+                       value={form.price} onChange={e=>setForm(f=>({...f,price:e.target.value}))}/>
+              </div>
+            </div>
+            <div>
+              <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>תאריך</label>
+              <input className="input" type="date" value={form.date} style={{direction:'ltr'}}
+                     onChange={e=>setForm(f=>({...f,date:e.target.value}))}/>
+            </div>
+            {form.shares&&form.price&&(
+              <div style={{background:'#f0fdf4',borderRadius:10,padding:'10px 14px',display:'flex',justifyContent:'space-between'}}>
+                <span style={{fontSize:13,color:'#15803d'}}>עלות כוללת</span>
+                <span style={{fontSize:14,fontWeight:800,color:'#14532d'}}>
+                  {fmtILS(parseFloat(form.shares||0)*parseFloat(form.price||0))}
+                  {cash>0&&parseFloat(form.shares)*parseFloat(form.price)>cash&&
+                    <span style={{color:'#dc2626',fontSize:11,marginRight:8}}>⚠️ חורג מהמזומן</span>}
+                </span>
+              </div>
+            )}
+            <div style={{display:'flex',gap:10}}>
+              <button className="btn-primary" onClick={buy} style={{background:'#15803d'}}>קנה ✓</button>
+              <button className="btn-secondary" onClick={()=>setMode('view')} style={{width:'auto',padding:'13px 14px'}}>ביטול</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sell panel */}
+      {mode==='sell'&&(
+        <div className="card" style={{padding:16,marginBottom:16}}>
+          <p style={{fontWeight:700,marginBottom:12}}>🔴 מכירת נייר ערך</p>
+          {holdings.length===0
+            ? <p style={{color:'#9CA3AF',fontSize:13}}>אין החזקות למכירה</p>
+            : <div style={{display:'flex',flexDirection:'column',gap:12}}>
+                <div>
+                  <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>נייר ערך</label>
+                  <select className="input" value={sellForm.holdingId}
+                          onChange={e=>setSellForm(f=>({...f,holdingId:e.target.value}))}>
+                    <option value="">בחר נייר...</option>
+                    {holdings.map(h=><option key={h.id} value={h.id}>{h.symbol} — {h.shares} יח׳</option>)}
+                  </select>
+                </div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                  <div>
+                    <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>כמות למכירה</label>
+                    <input className="input input-num" type="number" step="0.001" placeholder="0"
+                           value={sellForm.shares} onChange={e=>setSellForm(f=>({...f,shares:e.target.value}))}/>
+                  </div>
+                  <div>
+                    <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>מחיר מכירה</label>
+                    <input className="input input-num" type="number" step="0.01" placeholder="0.00"
+                           value={sellForm.price} onChange={e=>setSellForm(f=>({...f,price:e.target.value}))}/>
+                  </div>
+                </div>
+                {sellForm.holdingId&&sellForm.shares&&sellForm.price&&(()=>{
+                  const h=holdings.find(x=>x.id===parseInt(sellForm.holdingId));
+                  const pl=h?Math.round((parseFloat(sellForm.price)-h.avgCost)*parseFloat(sellForm.shares)*100)/100:0;
+                  return <div style={{background:pl>=0?'#f0fdf4':'#fef2f2',borderRadius:10,padding:'10px 14px'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',fontSize:13}}>
+                      <span style={{color:'#6B7280'}}>תמורה</span>
+                      <span style={{fontWeight:700}}>{fmtILS(parseFloat(sellForm.shares)*parseFloat(sellForm.price))}</span>
+                    </div>
+                    <div style={{display:'flex',justifyContent:'space-between',fontSize:13,marginTop:4}}>
+                      <span style={{color:'#6B7280'}}>רווח/הפסד</span>
+                      <span style={{fontWeight:700,color:pl>=0?'#15803d':'#dc2626'}}>{pl>=0?'+':''}{fmtILS(pl)}</span>
+                    </div>
+                  </div>;
+                })()}
+                <div>
+                  <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>תאריך</label>
+                  <input className="input" type="date" value={sellForm.date} style={{direction:'ltr'}}
+                         onChange={e=>setSellForm(f=>({...f,date:e.target.value}))}/>
+                </div>
+                <div style={{display:'flex',gap:10}}>
+                  <button className="btn-primary" onClick={sell} style={{background:'#b91c1c'}}>מכור ✓</button>
+                  <button className="btn-secondary" onClick={()=>setMode('view')} style={{width:'auto',padding:'13px 14px'}}>ביטול</button>
+                </div>
+              </div>
+          }
+        </div>
+      )}
+
+      {/* Sub-tabs */}
+      <div style={{display:'flex',background:'#f3f4f6',borderRadius:12,padding:3,gap:3,marginBottom:12}}>
+        {[['holdings','החזקות 📋'],['history','היסטוריה 📜']].map(([v,l])=>(
+          <button key={v} onClick={()=>setSubTab(v)} style={{flex:1,padding:'8px',border:'none',borderRadius:10,
+            fontSize:13,fontWeight:700,cursor:'pointer',background:subTab===v?'white':'transparent',
+            color:subTab===v?'#111':'#9CA3AF',boxShadow:subTab===v?'0 1px 4px rgba(0,0,0,.08)':'none'}}>
+            {l}
+          </button>
+        ))}
+      </div>
+
+      {/* Holdings list */}
+      {subTab==='holdings'&&(
+        holdings.length===0
+          ? <div className="card" style={{padding:32,textAlign:'center',color:'#9CA3AF',fontSize:14}}>
+              אין החזקות עדיין — לחץ "קנייה" להוסיף נייר ערך
+            </div>
+          : <div className="card" style={{overflow:'hidden'}}>
+              {holdings.map(h=>(
+                <div key={h.id} style={{padding:'14px 16px',borderBottom:'1px solid #f3f4f6',display:'flex',alignItems:'center',gap:12}}>
+                  <div style={{width:40,height:40,borderRadius:10,background:h.color+'22',display:'flex',
+                               alignItems:'center',justifyContent:'center',fontWeight:800,fontSize:13,color:h.color,flexShrink:0}}>
+                    {h.symbol.slice(0,3)}
+                  </div>
+                  <div style={{flex:1}}>
+                    <p style={{margin:0,fontWeight:700,fontSize:14}}>{h.symbol}</p>
+                    <p style={{margin:'2px 0 0',fontSize:11,color:'#9CA3AF'}}>{h.name} · {h.shares} יח׳</p>
+                  </div>
+                  <div style={{textAlign:'left'}}>
+                    <p style={{margin:0,fontWeight:700,fontSize:14}}>{fmtILS(h.shares*h.avgCost)}</p>
+                    <p style={{margin:'2px 0 0',fontSize:11,color:'#9CA3AF'}}>עלות ממוצעת: {h.avgCost.toFixed(2)}</p>
+                  </div>
+                </div>
+              ))}
+              {/* Allocation donut */}
+              {holdings.length>1&&donutData.length>0&&(
+                <div style={{padding:16,borderTop:'1px solid #f3f4f6'}}>
+                  <p style={{fontSize:13,fontWeight:700,marginBottom:8}}>הקצאה</p>
+                  <DonutChart data={donutData} cx_label="תיק" cx_val={fmtILS(totalCost)}/>
+                  <div style={{display:'flex',flexDirection:'column',gap:6,marginTop:8}}>
+                    {donutData.map(d=>(
+                      <div key={d.name} style={{display:'flex',justifyContent:'space-between',fontSize:13}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8}}>
+                          <span style={{width:10,height:10,borderRadius:'50%',background:d.color,display:'inline-block'}}/>
+                          <span style={{color:'#374151'}}>{d.name}</span>
+                        </div>
+                        <span style={{fontWeight:700}}>{fmtILS(d.value)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+      )}
+
+      {/* History */}
+      {subTab==='history'&&(
+        history.length===0
+          ? <div className="card" style={{padding:32,textAlign:'center',color:'#9CA3AF',fontSize:14}}>אין היסטוריה</div>
+          : <div className="card" style={{overflow:'hidden'}}>
+              {history.slice(0,30).map(h=>(
+                <div key={h.id} style={{padding:'12px 16px',borderBottom:'1px solid #f3f4f6',display:'flex',alignItems:'center',gap:12}}>
+                  <span style={{fontSize:22,flexShrink:0}}>
+                    {h.type==='buy'?'🟢':h.type==='sell'?'🔴':'💵'}
+                  </span>
+                  <div style={{flex:1}}>
+                    <p style={{margin:0,fontSize:13,fontWeight:700}}>
+                      {h.type==='deposit'?'הפקדת מזומן':`${h.type==='buy'?'קנייה':'מכירה'}: ${h.symbol}`}
+                    </p>
+                    <p style={{margin:'2px 0 0',fontSize:11,color:'#9CA3AF'}}>
+                      {fmtDate(h.date)}{h.shares?` · ${h.shares} יח׳ @ ${h.price}`:''}
+                    </p>
+                  </div>
+                  <div style={{textAlign:'left'}}>
+                    <p style={{margin:0,fontSize:13,fontWeight:700,color:h.type==='sell'?'#15803d':h.type==='buy'?'#dc2626':'#1e40af'}}>
+                      {h.type==='buy'?'-':'+'}
+                      {fmtILS(h.cost||h.proceeds||h.amount)}
+                    </p>
+                    {h.pl!==undefined&&<p style={{margin:'2px 0 0',fontSize:11,color:h.pl>=0?'#15803d':'#dc2626'}}>
+                      רווח: {h.pl>=0?'+':''}{fmtILS(h.pl)}
+                    </p>}
+                  </div>
+                </div>
+              ))}
+            </div>
+      )}
+    </div>
+  );
+}
+
 function InvestmentsTab({profile}) {
+  const [invTab,setInvTab]=useState('keren');
   const stored=lsGet(LS.INV,{});
-  const [kVal,setKVal]=useState(stored.kerenValue??0);
-  const [pVal,setPVal]=useState(stored.pensionValue??0);
-  const [kEdit,setKEdit]=useState(false);
-  const [pEdit,setPEdit]=useState(false);
-  const [kTmp,setKTmp]=useState('');
-  const [pTmp,setPTmp]=useState('');
   const gross=profile.grossSalary||0;
   const kerenMonthly=gross*(profile.kerenEmp+profile.kerenEr)/100;
   const pensionMonthly=gross*(profile.pensionEmp+profile.pensionEr)/100;
 
-  function saveKeren(){const v=parseFloat(kTmp);if(v>0){setKVal(v);lsSet(LS.INV,{...lsGet(LS.INV,{}),kerenValue:v});}setKEdit(false);}
-  function savePension(){const v=parseFloat(pTmp);if(v>0){setPVal(v);lsSet(LS.INV,{...lsGet(LS.INV,{}),pensionValue:v});}setPEdit(false);}
+  // Editable card helper
+  function EditableCard({title,emoji,value,setValue,monthly,color,light,tc,hint,lsKey}) {
+    const [editing,setEditing]=useState(false);
+    const [tmp,setTmp]=useState('');
+    function save(){const v=parseFloat(tmp);if(v>=0){setValue(v);lsSet(LS.INV,{...lsGet(LS.INV,{}),[lsKey]:v});}setEditing(false);}
+    return (
+      <div className="card" style={{overflow:'hidden'}}>
+        <div style={{background:`linear-gradient(135deg,${color},${color}cc)`,padding:'16px 20px',
+                     display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div style={{color:'white'}}>
+            <p style={{margin:0,fontSize:16,fontWeight:700}}>{emoji} {title}</p>
+            {monthly>0&&<p style={{margin:'4px 0 0',fontSize:12,opacity:.7}}>הפקדה חודשית: {fmtILS(monthly)}</p>}
+          </div>
+          <div style={{textAlign:'left',color:'white'}}>
+            <p style={{margin:0,fontSize:22,fontWeight:800}}>{value>0?fmtILS(value):'—'}</p>
+            <p style={{margin:'2px 0 0',fontSize:11,opacity:.6}}>שווי נוכחי</p>
+          </div>
+        </div>
+        <div style={{padding:14}}>
+          {editing?(
+            <div style={{display:'flex',gap:10,alignItems:'flex-end'}}>
+              <div style={{flex:1}}>
+                <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>שווי נוכחי ₪</label>
+                <input className="input input-num" type="number" value={tmp}
+                       onChange={e=>setTmp(e.target.value)} placeholder="0" autoFocus/>
+              </div>
+              <button onClick={save} className="btn-primary" style={{width:'auto',padding:'13px 18px'}}>שמור</button>
+              <button onClick={()=>setEditing(false)} className="btn-secondary" style={{width:'auto',padding:'13px 14px'}}>ביטול</button>
+            </div>
+          ):(
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <p style={{fontSize:12,color:'#9CA3AF',margin:0}}>💡 {hint}</p>
+              <button onClick={()=>{setTmp(value||'');setEditing(true);}}
+                      style={{border:'none',background:light,color:tc,borderRadius:8,padding:'7px 14px',fontSize:13,fontWeight:700,cursor:'pointer'}}>
+                ✏️ עדכן
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
-  const cards=[
-    {
-      title:'קרן השתלמות',emoji:'📈',value:kVal,monthly:kerenMonthly,
-      show:profile.hasKeren,color:'#1e3a5f',light:'#eff6ff',tc:'#1e40af',
-      editing:kEdit,startEdit:()=>{setKTmp(kVal||'');setKEdit(true);},
-      tmp:kTmp,setTmp:setKTmp,save:saveKeren,cancel:()=>setKEdit(false),
-      hint:'עדכן מ-gemel.co.il',
-    },
-    {
-      title:'פנסיה',emoji:'🏛️',value:pVal,monthly:pensionMonthly,
-      show:profile.hasPension,color:'#4a1942',light:'#f5f3ff',tc:'#6d28d9',
-      editing:pEdit,startEdit:()=>{setPTmp(pVal||'');setPEdit(true);},
-      tmp:pTmp,setTmp:setPTmp,save:savePension,cancel:()=>setPEdit(false),
-      hint:'עדכן מ-pension.mof.gov.il',
-    },
+  // Per-sub-tab state
+  const [kVal,setKVal]=useState(stored.kerenValue??0);
+  const [pVal,setPVal]=useState(stored.pensionValue??0);
+  const [savingsAccounts,setSavingsAccounts]=useState(()=>lsGet('fil_savings',[]));
+  const [moneyMarket,setMoneyMarket]=useState(()=>lsGet('fil_mm',{value:0,yield:4.5,name:''}));
+  const [savEdit,setSavEdit]=useState(false);
+  const [savForm,setSavForm]=useState({name:'',bank:'',value:'',rate:''});
+  const [mmEdit,setMmEdit]=useState(false);
+  const [mmTmp,setMmTmp]=useState({value:'',yield:'',name:''});
+
+  function addSavings(){
+    const v=parseFloat(savForm.value);
+    if(!savForm.name||isNaN(v)||v<=0) return;
+    const list=[...savingsAccounts,{id:Date.now(),name:savForm.name,bank:savForm.bank,
+      value:v,rate:parseFloat(savForm.rate)||0}];
+    setSavingsAccounts(list); lsSet('fil_savings',list);
+    setSavForm({name:'',bank:'',value:'',rate:''}); setSavEdit(false);
+  }
+  function delSavings(id){const list=savingsAccounts.filter(s=>s.id!==id);setSavingsAccounts(list);lsSet('fil_savings',list);}
+  function saveMM(){
+    const v={value:parseFloat(mmTmp.value)||0,yield:parseFloat(mmTmp.yield)||0,name:mmTmp.name};
+    setMoneyMarket(v); lsSet('fil_mm',v); setMmEdit(false);
+  }
+
+  const INV_TABS=[
+    {id:'keren',    label:'קה"ש', emoji:'📈'},
+    {id:'pension',  label:'פנסיה',emoji:'🏛️'},
+    {id:'savings',  label:'חסכון', emoji:'🏦'},
+    {id:'mm',       label:'ק. כספית',emoji:'💵'},
+    {id:'stocks',   label:'מניות', emoji:'📊'},
   ];
 
-  if(!profile.hasKeren&&!profile.hasPension)
-    return <div style={{padding:40,textAlign:'center',color:'#9CA3AF',fontSize:15}}>
-      לא הוגדרו קרנות בהגדרה הראשונית
-    </div>;
-
   return (
-    <div style={{padding:16,display:'flex',flexDirection:'column',gap:16}}>
-      {cards.filter(c=>c.show).map(c=>(
-        <div key={c.title} className="card" style={{overflow:'hidden'}}>
-          <div style={{background:`linear-gradient(135deg,${c.color},${c.color}cc)`,padding:'16px 20px',
-                       display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-            <div style={{color:'white'}}>
-              <p style={{margin:0,fontSize:16,fontWeight:700}}>{c.emoji} {c.title}</p>
-              <p style={{margin:'4px 0 0',fontSize:12,opacity:.7}}>הפקדה חודשית: {fmtILS(c.monthly)}</p>
+    <div>
+      {/* Sub-tab bar */}
+      <div style={{background:'white',borderBottom:'1px solid #e5e7eb',overflowX:'auto',display:'flex',padding:'0 8px'}}
+           className="scrollbar-hide">
+        {INV_TABS.map(t=>(
+          <button key={t.id} onClick={()=>setInvTab(t.id)} style={{
+            flexShrink:0,padding:'12px 14px',border:'none',background:'none',cursor:'pointer',
+            borderBottom:`2px solid ${invTab===t.id?'#22C55E':'transparent'}`,
+            color:invTab===t.id?'#22C55E':'#9CA3AF',fontSize:13,fontWeight:invTab===t.id?700:500,
+            whiteSpace:'nowrap',transition:'color .15s'}}>
+            {t.emoji} {t.label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{padding:16,display:'flex',flexDirection:'column',gap:14}}>
+
+        {invTab==='keren'&&(
+          profile.hasKeren
+            ? <EditableCard title="קרן השתלמות" emoji="📈" value={kVal} setValue={setKVal}
+                monthly={kerenMonthly} color="#1e3a5f" light="#eff6ff" tc="#1e40af"
+                hint="עדכן מ-gemel.co.il" lsKey="kerenValue"/>
+            : <p style={{color:'#9CA3AF',textAlign:'center',padding:32}}>לא הוגדרה קרן השתלמות</p>
+        )}
+
+        {invTab==='pension'&&(
+          profile.hasPension
+            ? <EditableCard title="פנסיה" emoji="🏛️" value={pVal} setValue={setPVal}
+                monthly={pensionMonthly} color="#4a1942" light="#f5f3ff" tc="#6d28d9"
+                hint="עדכן מ-pension.mof.gov.il" lsKey="pensionValue"/>
+            : <p style={{color:'#9CA3AF',textAlign:'center',padding:32}}>לא הוגדרה פנסיה</p>
+        )}
+
+        {invTab==='savings'&&(
+          <div style={{display:'flex',flexDirection:'column',gap:12}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <p style={{margin:0,fontWeight:700,fontSize:15}}>חסכונות בנקאיים</p>
+              <button onClick={()=>setSavEdit(v=>!v)} style={{border:'none',background:'#f0fdf4',color:'#15803d',
+                borderRadius:10,padding:'7px 14px',fontSize:13,fontWeight:700,cursor:'pointer'}}>
+                {savEdit?'ביטול':'+ הוסף'}
+              </button>
             </div>
-            <div style={{textAlign:'left',color:'white'}}>
-              <p style={{margin:0,fontSize:22,fontWeight:800}}>{c.value>0?fmtILS(c.value):'—'}</p>
-              <p style={{margin:'2px 0 0',fontSize:11,opacity:.6}}>שווי נוכחי</p>
-            </div>
-          </div>
-          <div style={{padding:16}}>
-            {c.editing?(
-              <div style={{display:'flex',gap:10,alignItems:'flex-end'}}>
-                <div style={{flex:1}}>
-                  <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>שווי נוכחי ₪</label>
-                  <input className="input input-num" type="number" value={c.tmp}
-                         onChange={e=>c.setTmp(e.target.value)} placeholder="0" autoFocus/>
+            {savEdit&&(
+              <div className="card" style={{padding:16,display:'flex',flexDirection:'column',gap:10}}>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                  <div>
+                    <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>שם החיסכון</label>
+                    <input className="input" placeholder='פק"מ / חסכון' value={savForm.name}
+                           onChange={e=>setSavForm(f=>({...f,name:e.target.value}))}/>
+                  </div>
+                  <div>
+                    <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>בנק</label>
+                    <input className="input" placeholder="הפועלים" value={savForm.bank}
+                           onChange={e=>setSavForm(f=>({...f,bank:e.target.value}))}/>
+                  </div>
                 </div>
-                <button onClick={c.save} className="btn-primary" style={{width:'auto',padding:'13px 18px'}}>שמור</button>
-                <button onClick={c.cancel} className="btn-secondary" style={{width:'auto',padding:'13px 14px'}}>ביטול</button>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                  <div>
+                    <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>יתרה ₪</label>
+                    <input className="input input-num" type="number" placeholder="0" value={savForm.value}
+                           onChange={e=>setSavForm(f=>({...f,value:e.target.value}))}/>
+                  </div>
+                  <div>
+                    <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>ריבית שנתית %</label>
+                    <input className="input input-num" type="number" step="0.1" placeholder="3.5" value={savForm.rate}
+                           onChange={e=>setSavForm(f=>({...f,rate:e.target.value}))}/>
+                  </div>
+                </div>
+                <button className="btn-primary" onClick={addSavings}>הוסף חיסכון ✓</button>
               </div>
-            ):(
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                <p style={{fontSize:12,color:'#9CA3AF',margin:0}}>💡 {c.hint}</p>
-                <button onClick={c.startEdit} style={{border:'none',background:c.light,color:c.tc,
-                  borderRadius:8,padding:'7px 14px',fontSize:13,fontWeight:700,cursor:'pointer'}}>
-                  ✏️ עדכן
-                </button>
+            )}
+            {savingsAccounts.length===0&&!savEdit&&(
+              <div className="card" style={{padding:32,textAlign:'center',color:'#9CA3AF',fontSize:14}}>
+                אין חסכונות — לחץ "הוסף"
+              </div>
+            )}
+            {savingsAccounts.map(s=>(
+              <div key={s.id} className="card" style={{padding:16,display:'flex',alignItems:'center',gap:12}}>
+                <span style={{fontSize:28}}>🏦</span>
+                <div style={{flex:1}}>
+                  <p style={{margin:0,fontWeight:700,fontSize:14}}>{s.name}</p>
+                  <p style={{margin:'2px 0 0',fontSize:12,color:'#9CA3AF'}}>{s.bank}{s.rate>0?` · ${s.rate}% שנתי`:''}</p>
+                </div>
+                <div style={{textAlign:'left'}}>
+                  <p style={{margin:0,fontWeight:800,fontSize:16}}>{fmtILS(s.value)}</p>
+                  {s.rate>0&&<p style={{margin:'2px 0 0',fontSize:11,color:'#15803d'}}>+{fmtILS(s.value*s.rate/100)}/שנה</p>}
+                </div>
+                <button onClick={()=>delSavings(s.id)}
+                        style={{border:'none',background:'#fee2e2',color:'#dc2626',borderRadius:8,padding:'6px 10px',cursor:'pointer',fontSize:13}}>✕</button>
+              </div>
+            ))}
+            {savingsAccounts.length>0&&(
+              <div className="card" style={{padding:14,background:'#f0fdf4',border:'1px solid #bbf7d0'}}>
+                <div style={{display:'flex',justifyContent:'space-between'}}>
+                  <span style={{fontSize:14,fontWeight:700,color:'#14532d'}}>סה"כ חסכונות</span>
+                  <span style={{fontSize:16,fontWeight:800,color:'#14532d'}}>{fmtILS(savingsAccounts.reduce((s,a)=>s+a.value,0))}</span>
+                </div>
               </div>
             )}
           </div>
-        </div>
-      ))}
+        )}
 
-      <div className="card" style={{padding:16}}>
-        <p style={{fontSize:13,fontWeight:700,marginBottom:12}}>📊 סיכום חיסכון חודשי</p>
-        {gross>0?[
-          {label:`קרן השתלמות (${profile.kerenEmp}%+${profile.kerenEr}%)`,val:kerenMonthly,show:profile.hasKeren},
-          {label:`פנסיה (${profile.pensionEmp}%+${profile.pensionEr}%)`,val:pensionMonthly,show:profile.hasPension},
-        ].filter(r=>r.show).map(r=>(
-          <div key={r.label} style={{display:'flex',justifyContent:'space-between',padding:'8px 0',
-               borderBottom:'1px solid #f3f4f6',fontSize:13}}>
-            <span style={{color:'#374151'}}>{r.label}</span>
-            <span style={{fontWeight:700}}>{fmtILS(r.val)}</span>
+        {invTab==='mm'&&(
+          <div style={{display:'flex',flexDirection:'column',gap:12}}>
+            <div className="card" style={{overflow:'hidden'}}>
+              <div style={{background:'linear-gradient(135deg,#064e3b,#065f46)',padding:'16px 20px',
+                           display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <div style={{color:'white'}}>
+                  <p style={{margin:0,fontSize:16,fontWeight:700}}>💵 קרן כספית</p>
+                  <p style={{margin:'4px 0 0',fontSize:12,opacity:.7}}>{moneyMarket.name||'לא הוגדר שם'}</p>
+                </div>
+                <div style={{textAlign:'left',color:'white'}}>
+                  <p style={{margin:0,fontSize:22,fontWeight:800}}>{moneyMarket.value>0?fmtILS(moneyMarket.value):'—'}</p>
+                  {moneyMarket.yield>0&&<p style={{margin:'2px 0 0',fontSize:11,opacity:.7}}>תשואה: {moneyMarket.yield}%</p>}
+                </div>
+              </div>
+              <div style={{padding:14}}>
+                {mmEdit?(
+                  <div style={{display:'flex',flexDirection:'column',gap:10}}>
+                    <input className="input" placeholder='שם הקרן (לדוגמה: "מגדל ש.כ.")' value={mmTmp.name}
+                           onChange={e=>setMmTmp(f=>({...f,name:e.target.value}))}/>
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                      <input className="input input-num" type="number" placeholder="שווי ₪" value={mmTmp.value}
+                             onChange={e=>setMmTmp(f=>({...f,value:e.target.value}))}/>
+                      <input className="input input-num" type="number" step="0.1" placeholder="תשואה שנתית %" value={mmTmp.yield}
+                             onChange={e=>setMmTmp(f=>({...f,yield:e.target.value}))}/>
+                    </div>
+                    <div style={{display:'flex',gap:10}}>
+                      <button className="btn-primary" onClick={saveMM}>שמור ✓</button>
+                      <button className="btn-secondary" onClick={()=>setMmEdit(false)} style={{width:'auto',padding:'13px 14px'}}>ביטול</button>
+                    </div>
+                  </div>
+                ):(
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                    <div>
+                      {moneyMarket.value>0&&moneyMarket.yield>0&&(
+                        <p style={{fontSize:12,color:'#15803d',margin:0}}>
+                          📈 הכנסה שנתית משוערת: {fmtILS(moneyMarket.value*moneyMarket.yield/100)}
+                        </p>
+                      )}
+                      <p style={{fontSize:11,color:'#9CA3AF',margin:'4px 0 0'}}>עדכן מהמסמכי הקרן שלך</p>
+                    </div>
+                    <button onClick={()=>{setMmTmp({value:moneyMarket.value||'',yield:moneyMarket.yield||'',name:moneyMarket.name||''});setMmEdit(true);}}
+                            style={{border:'none',background:'#ecfdf5',color:'#064e3b',borderRadius:8,padding:'7px 14px',fontSize:13,fontWeight:700,cursor:'pointer'}}>
+                      ✏️ עדכן
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="card" style={{padding:14,background:'#f0fdf4',border:'1px solid #a7f3d0'}}>
+              <p style={{fontSize:12,color:'#065f46',margin:'0 0 6px',fontWeight:700}}>💡 מה זה קרן כספית?</p>
+              <p style={{fontSize:12,color:'#047857',margin:0,lineHeight:1.6}}>
+                קרן כספית (Money Market Fund) היא אפיק השקעה סולידי בישראל עם נזילות יומית.
+                תשואה ממוצעת: 4-5% שנתי. ניתן לפתוח דרך בתי ההשקעות (מגדל, הראל, אלטשולר שחם וכד׳).
+              </p>
+            </div>
           </div>
-        )):<p style={{fontSize:13,color:'#9CA3AF'}}>הזן שכר ברוטו בהגדרות לחישוב</p>}
+        )}
+
+        {invTab==='stocks'&&<PortfolioSection/>}
+
       </div>
     </div>
   );
