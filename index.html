@@ -1,0 +1,799 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FinanceIL | ניהול כספים אישי</title>
+  <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18.2.0/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/recharts@2.8.0/umd/Recharts.js"></script>
+  <script>
+    tailwind.config = {
+      theme: { extend: { fontFamily: { sans: ['Heebo', 'sans-serif'] } } }
+    };
+  </script>
+  <style>
+    * { font-family: 'Heebo', 'Segoe UI', sans-serif; }
+    body { background: #f0f4f8; }
+    @keyframes slideUp {
+      from { transform: translateY(40px); opacity: 0; }
+      to   { transform: translateY(0);   opacity: 1; }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; background: #dcfce7; }
+      to   { opacity: 1; background: transparent; }
+    }
+    .modal-enter { animation: slideUp 0.28s ease; }
+    .tx-new      { animation: fadeIn 2s ease forwards; }
+    .card-lift   { transition: transform 0.18s ease, box-shadow 0.18s ease; }
+    .card-lift:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.09); }
+    .scrollbar-hide::-webkit-scrollbar { display: none; }
+    .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+    /* force ltr on number inputs so digits don't flip */
+    input[type="number"] { direction: ltr; text-align: right; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    /* ─────────────────────────────────────────────────────────────
+       REACT / RECHARTS GLOBALS
+    ───────────────────────────────────────────────────────────── */
+    const { useState, useEffect, useMemo, useCallback } = React;
+    const {
+      PieChart, Pie, Cell, Tooltip,
+      ResponsiveContainer, Legend
+    } = Recharts;
+
+    /* ─────────────────────────────────────────────────────────────
+       AUTO-CATEGORISATION RULES
+    ───────────────────────────────────────────────────────────── */
+    const CATEGORY_RULES = [
+      {
+        keywords: ['שופרסל','rami levy','רמי לוי','ויקטורי','victory',
+                   'יינות ביתן','מגה','mega','אושר עד','fresh market','פרש מרקט'],
+        category: 'סופרמרקט', color: '#22C55E', emoji: '🛒'
+      },
+      {
+        keywords: ['וולט','wolt','מקדונלד',"mcdonald",'בורגר קינג','burger king',
+                   'קפה','cafe','coffee','מסעדה','restaurant','פיצה','pizza',
+                   'סושי','sushi','חומוס','שאורמה','shawarma'],
+        category: 'מסעדות וקפה', color: '#F97316', emoji: '🍽️'
+      },
+      {
+        keywords: ['ארנונה','עיריית','municipality','city tax'],
+        category: 'ארנונה', color: '#8B5CF6', emoji: '🏛️'
+      },
+      {
+        keywords: ['hot','הוט','yes','יס','netflix','נטפליקס',
+                   'spotify','ספוטיפיי','apple tv','disney','youtube premium'],
+        category: 'בידור ומנויים', color: '#EC4899', emoji: '🎬'
+      },
+      {
+        keywords: ['partner','פרטנר','cellcom','סלקום','hot mobile',
+                   'pelephone','פלאפון','bezeq','בזק','golan telecom','גולן טלקום'],
+        category: 'תקשורת', color: '#06B6D4', emoji: '📱'
+      },
+      {
+        keywords: ['paz','פז','sonol','סונול','delek','דלק','ten','תן','fuel','דלק תחנה'],
+        category: 'דלק ורכב', color: '#84CC16', emoji: '⛽'
+      },
+      {
+        keywords: ['egged','אגד','dan','דן','ravkav','רב-קו','rav-kav',
+                   'rail','רכבת','gett','יאנגו','yango','taxi','parking','חניה'],
+        category: 'תחבורה', color: '#3B82F6', emoji: '🚌'
+      },
+      {
+        keywords: ['חברת החשמל','iec','electricity','water','מים','ועד בית'],
+        category: 'חשבונות בית', color: '#EAB308', emoji: '💡'
+      },
+      {
+        keywords: ['ביטוח','harel','הראל','menora','מנורה','clal','כלל',
+                   'migdal','מגדל','ayalon','איילון'],
+        category: 'ביטוח', color: '#6366F1', emoji: '🛡️'
+      },
+      {
+        keywords: ['maccabi','מכבי','clalit','כללית','leumit','לאומית',
+                   'pharmacy','בית מרקחת','super pharm','סופר-פארם',
+                   'hospital','doctor','רופא','תרופות'],
+        category: 'בריאות', color: '#14B8A6', emoji: '🏥'
+      },
+      {
+        keywords: ['amazon','אמזון','aliexpress','ebay','zara','זארה',
+                   'h&m','castro','קסטרו','renuar','רנואר','mall','קניון','shopping'],
+        category: 'קניות', color: '#F59E0B', emoji: '🛍️'
+      },
+      {
+        keywords: ['salary','משכורת','שכר','העברה נכנסת','הכנסה','income','bonus','בונוס'],
+        category: 'הכנסה', color: '#10B981', emoji: '💰'
+      },
+      {
+        keywords: ['rent','שכר דירה','שכירות','house','דירה','mortgage','משכנתה'],
+        category: 'דיור', color: '#64748B', emoji: '🏠'
+      },
+    ];
+    const DEFAULT_CAT = { category: 'אחר', color: '#9CA3AF', emoji: '📦' };
+
+    /* ─────────────────────────────────────────────────────────────
+       BUSINESS LOGIC — exported-like functions (also used in tests)
+    ───────────────────────────────────────────────────────────── */
+
+    /**
+     * Auto-Categorisation Engine
+     * Maps a transaction description string to { category, color, emoji }.
+     * Returns DEFAULT_CAT when no keyword matches.
+     */
+    function categorizeTransaction(description) {
+      if (!description || typeof description !== 'string') return { ...DEFAULT_CAT };
+      const lower = description.toLowerCase().trim();
+      if (!lower) return { ...DEFAULT_CAT };
+      for (const rule of CATEGORY_RULES) {
+        for (const kw of rule.keywords) {
+          if (lower.includes(kw.toLowerCase())) {
+            return { category: rule.category, color: rule.color, emoji: rule.emoji };
+          }
+        }
+      }
+      return { ...DEFAULT_CAT };
+    }
+
+    /**
+     * Cash Flow Engine
+     * Calculates "Safe to Spend Today" + monthly summary.
+     *
+     * safeToSpend = liquidBalance − upcomingRequiredExpenses + upcomingExpectedIncome
+     *
+     * Edge-case guards:
+     *   • Negative liquid balance  → safeToSpend clamped to 0
+     *   • Savings excluded from liquid pool
+     *   • All sums rounded to 2dp to avoid floating-point drift
+     */
+    function calculateCashFlow(accounts, transactions, recurringExpenses, expectedIncome, referenceDate) {
+      const now   = referenceDate instanceof Date ? referenceDate : new Date();
+      const day   = now.getDate();
+      const daysInMonth  = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+      const daysRemaining = daysInMonth - day;
+
+      // FP-safe accumulator helper
+      const safeSum = (arr, fn) =>
+        Math.round(arr.reduce((s, x) => s + fn(x), 0) * 100) / 100;
+
+      const totalBalance   = safeSum(accounts, a => a.balance);
+      const liquidBalance  = safeSum(
+        accounts.filter(a => a.type !== 'חיסכון'), a => a.balance
+      );
+
+      const upcomingExpenses = safeSum(
+        recurringExpenses.filter(e => e.dueDay > day), e => e.amount
+      );
+      const upcomingIncome   = safeSum(
+        expectedIncome.filter(i => i.dueDay > day), i => i.amount
+      );
+
+      const rawSafe    = liquidBalance - upcomingExpenses + upcomingIncome;
+      const safeToSpend = Math.max(0, Math.round(rawSafe * 100) / 100);
+
+      const thisMonth = transactions.filter(t => {
+        const d = new Date(t.date);
+        return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+      });
+
+      const monthlyIncome   = safeSum(thisMonth.filter(t => t.amount > 0),  t =>  t.amount);
+      const monthlyExpenses = safeSum(thisMonth.filter(t => t.amount < 0),  t => -t.amount);
+
+      return {
+        totalBalance, liquidBalance,
+        safeToSpend, upcomingExpenses, upcomingIncome,
+        monthlyIncome, monthlyExpenses,
+        daysRemaining, daysInMonth, currentDay: day,
+      };
+    }
+
+    function getExpensesByCategory(transactions) {
+      const map = {};
+      transactions.filter(t => t.amount < 0).forEach(t => {
+        if (!map[t.category]) {
+          map[t.category] = { name: t.category, value: 0, color: t.color, emoji: t.emoji };
+        }
+        map[t.category].value =
+          Math.round((map[t.category].value + Math.abs(t.amount)) * 100) / 100;
+      });
+      return Object.values(map).sort((a, b) => b.value - a.value);
+    }
+
+    function formatCurrency(amount) {
+      if (typeof amount !== 'number' || isNaN(amount)) return '₪0';
+      return new Intl.NumberFormat('he-IL', {
+        style: 'currency', currency: 'ILS',
+        minimumFractionDigits: 0, maximumFractionDigits: 0,
+      }).format(Math.round(amount));
+    }
+
+    function formatDate(str) {
+      const d = new Date(str);
+      if (isNaN(d)) return str;
+      return new Intl.DateTimeFormat('he-IL', { day: 'numeric', month: 'long' }).format(d);
+    }
+
+    /* ─────────────────────────────────────────────────────────────
+       MOCK DATA
+    ───────────────────────────────────────────────────────────── */
+    const ACCOUNTS = [
+      { id:1, bank:'בנק הפועלים', type:'עובר ושב',      balance:  12450, accountNumber:'****3421', color:'#E63329', logo:'🏦' },
+      { id:2, bank:'בנק לאומי',   type:'חיסכון',         balance:  35000, accountNumber:'****8876', color:'#0062A3', logo:'🏦' },
+      { id:3, bank:'Max',          type:'כרטיס אשראי',   balance:  -3200, accountNumber:'****5544', color:'#FF6B35', logo:'💳' },
+    ];
+
+    const RECURRING_EXPENSES = [
+      { id:1, name:'שכר דירה',       amount:5500, dueDay:1,  emoji:'🏠' },
+      { id:2, name:'ארנונה',          amount:1200, dueDay:10, emoji:'🏛️' },
+      { id:3, name:'חברת החשמל',     amount: 350, dueDay:15, emoji:'💡' },
+      { id:4, name:'HOT',             amount: 189, dueDay:20, emoji:'📺' },
+      { id:5, name:'פרטנר',           amount: 149, dueDay:22, emoji:'📱' },
+      { id:6, name:'ביטוח רכב',      amount: 450, dueDay:5,  emoji:'🛡️' },
+    ];
+
+    const EXPECTED_INCOME = [
+      { id:1, name:'משכורת', amount:18000, dueDay:7, emoji:'💰' },
+    ];
+
+    function daysAgo(n) {
+      const d = new Date();
+      d.setDate(d.getDate() - n);
+      return d.toISOString().split('T')[0];
+    }
+
+    const RAW_TRANSACTIONS = [
+      { id: 1, description: 'משכורת - חברת הייטק בע"מ',        amount:  18000,   date: daysAgo(3),  account:'בנק הפועלים' },
+      { id: 2, description: 'שופרסל דיל - סניף הרצל',           amount:   -285.50, date: daysAgo(1),  account:'Max' },
+      { id: 3, description: 'וולט - הזמנה',                      amount:    -67.00, date: daysAgo(1),  account:'Max' },
+      { id: 4, description: 'עיריית תל אביב - ארנונה',           amount:  -1200,   date: daysAgo(2),  account:'בנק הפועלים' },
+      { id: 5, description: 'HOT - מנוי חודשי',                  amount:   -189,   date: daysAgo(5),  account:'Max' },
+      { id: 6, description: "קפה ג'ו - רוטשילד",                 amount:    -45,   date: daysAgo(0),  account:'Max' },
+      { id: 7, description: 'תחנת דלק פז',                       amount:   -220,   date: daysAgo(4),  account:'Max' },
+      { id: 8, description: 'ביטוח רכב - הראל',                  amount:   -890,   date: daysAgo(6),  account:'בנק הפועלים' },
+      { id: 9, description: 'רמי לוי - פתח תקווה',               amount:   -312,   date: daysAgo(7),  account:'Max' },
+      { id:10, description: 'Netflix',                            amount:    -58,   date: daysAgo(8),  account:'Max' },
+      { id:11, description: 'פרטנר - חשבון חודשי',               amount:   -149,   date: daysAgo(9),  account:'Max' },
+      { id:12, description: 'רב-קו - טעינה',                     amount:   -100,   date: daysAgo(3),  account:'בנק הפועלים' },
+      { id:13, description: 'שכר דירה - ינואר',                  amount:  -5500,   date: daysAgo(10), account:'בנק הפועלים' },
+      { id:14, description: 'חברת החשמל - חיוב חודשי',           amount:   -350,   date: daysAgo(11), account:'בנק הפועלים' },
+      { id:15, description: 'מכבי שירותי בריאות',                amount:   -120,   date: daysAgo(12), account:'Max' },
+      { id:16, description: 'Amazon - הזמנה',                    amount:   -179,   date: daysAgo(6),  account:'Max' },
+      { id:17, description: 'Spotify Premium',                    amount:    -23,   date: daysAgo(13), account:'Max' },
+      { id:18, description: 'גט - הזמנת מונית',                  amount:    -38,   date: daysAgo(2),  account:'Max' },
+    ];
+
+    const INITIAL_TRANSACTIONS = RAW_TRANSACTIONS.map(t => ({
+      ...t,
+      ...categorizeTransaction(t.description),
+    }));
+
+    /* ─────────────────────────────────────────────────────────────
+       SMALL UI COMPONENTS
+    ───────────────────────────────────────────────────────────── */
+
+    function Badge({ label, color }) {
+      return (
+        <span
+          style={{ background: color + '22', color }}
+          className="text-xs font-semibold px-2 py-0.5 rounded-full whitespace-nowrap"
+        >
+          {label}
+        </span>
+      );
+    }
+
+    function TransactionRow({ tx, isNew }) {
+      const pos = tx.amount >= 0;
+      return (
+        <div className={`flex items-center gap-3 p-3 rounded-xl transition-colors hover:bg-gray-50 ${isNew ? 'tx-new' : ''}`}>
+          <div
+            className="w-10 h-10 rounded-full flex items-center justify-center text-lg flex-shrink-0"
+            style={{ background: tx.color + '22' }}
+          >
+            {tx.emoji}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-gray-800 truncate">{tx.description}</p>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-xs text-gray-400">{formatDate(tx.date)}</span>
+              <Badge label={tx.category} color={tx.color} />
+            </div>
+          </div>
+          <span className={`text-sm font-bold flex-shrink-0 ${pos ? 'text-green-600' : 'text-red-500'}`}>
+            {pos ? '+' : ''}{formatCurrency(tx.amount)}
+          </span>
+        </div>
+      );
+    }
+
+    function AccountCard({ acc }) {
+      const isDebt = acc.balance < 0;
+      return (
+        <div className="bg-white rounded-2xl p-4 border border-gray-100 flex items-center gap-3 card-lift">
+          <div
+            className="w-11 h-11 rounded-full flex items-center justify-center text-xl flex-shrink-0"
+            style={{ background: acc.color + '22' }}
+          >
+            {acc.logo}
+          </div>
+          <div className="flex-1">
+            <p className="text-sm font-bold text-gray-800">{acc.bank}</p>
+            <p className="text-xs text-gray-400">{acc.type} · {acc.accountNumber}</p>
+          </div>
+          <div className="text-left">
+            <p className={`text-sm font-bold ${isDebt ? 'text-red-500' : 'text-gray-800'}`}>
+              {formatCurrency(acc.balance)}
+            </p>
+            {isDebt && <p className="text-xs text-gray-400 text-center">חוב</p>}
+          </div>
+        </div>
+      );
+    }
+
+    /* ─────────────────────────────────────────────────────────────
+       DONUT CHART
+    ───────────────────────────────────────────────────────────── */
+    function DonutChart({ data }) {
+      const [activeIdx, setActiveIdx] = useState(null);
+      if (!data || data.length === 0) {
+        return (
+          <div className="h-48 flex items-center justify-center text-gray-400 text-sm">
+            אין נתוני הוצאות
+          </div>
+        );
+      }
+      const total = data.reduce((s, d) => s + d.value, 0);
+
+      const pctLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent }) => {
+        if (percent < 0.05) return null;
+        const R = Math.PI / 180;
+        const r = innerRadius + (outerRadius - innerRadius) * 0.5;
+        return (
+          <text
+            x={cx + r * Math.cos(-midAngle * R)}
+            y={cy + r * Math.sin(-midAngle * R)}
+            fill="white" textAnchor="middle" dominantBaseline="central"
+            fontSize={11} fontWeight="700"
+          >
+            {`${(percent * 100).toFixed(0)}%`}
+          </text>
+        );
+      };
+
+      const TipContent = ({ active, payload }) => {
+        if (!active || !payload || !payload.length) return null;
+        const d = payload[0].payload;
+        return (
+          <div className="bg-white border border-gray-200 rounded-xl p-3 shadow-lg text-sm">
+            <p className="font-bold">{d.emoji} {d.name}</p>
+            <p className="text-gray-700">{formatCurrency(d.value)}</p>
+            <p className="text-gray-400 text-xs">{((d.value / total) * 100).toFixed(1)}% מסך ההוצאות</p>
+          </div>
+        );
+      };
+
+      return (
+        <div>
+          <ResponsiveContainer width="100%" height={210}>
+            <PieChart>
+              <Pie
+                data={data}
+                cx="50%" cy="50%"
+                innerRadius={52} outerRadius={88}
+                paddingAngle={2}
+                dataKey="value"
+                labelLine={false}
+                label={pctLabel}
+                onMouseEnter={(_, i) => setActiveIdx(i)}
+                onMouseLeave={() => setActiveIdx(null)}
+              >
+                {data.map((entry, i) => (
+                  <Cell
+                    key={`c-${i}`}
+                    fill={entry.color}
+                    opacity={activeIdx === null || activeIdx === i ? 1 : 0.55}
+                    stroke={activeIdx === i ? '#fff' : 'none'}
+                    strokeWidth={activeIdx === i ? 3 : 0}
+                  />
+                ))}
+              </Pie>
+              <Tooltip content={<TipContent />} />
+            </PieChart>
+          </ResponsiveContainer>
+
+          <div className="space-y-1.5 mt-2 max-h-44 overflow-y-auto scrollbar-hide">
+            {data.map(item => (
+              <div key={item.name} className="flex items-center justify-between text-sm">
+                <div className="flex items-center gap-2">
+                  <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: item.color }} />
+                  <span className="text-gray-600">{item.emoji} {item.name}</span>
+                </div>
+                <span className="font-semibold text-gray-800">{formatCurrency(item.value)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    /* ─────────────────────────────────────────────────────────────
+       ADD TRANSACTION MODAL
+    ───────────────────────────────────────────────────────────── */
+    function AddModal({ onClose, onAdd }) {
+      const [form, setForm] = useState({ desc: '', amount: '', type: 'expense', account: 'Max' });
+      const [preview, setPreview] = useState(null);
+
+      useEffect(() => {
+        setPreview(form.desc.length > 2 ? categorizeTransaction(form.desc) : null);
+      }, [form.desc]);
+
+      function submit(e) {
+        e.preventDefault();
+        const raw = parseFloat(form.amount);
+        if (isNaN(raw) || raw <= 0) return;
+        // FP guard: round to 2dp before flipping sign
+        const amount = form.type === 'expense'
+          ? -(Math.round(raw * 100) / 100)
+          :   Math.round(raw * 100) / 100;
+        onAdd({
+          description: form.desc,
+          amount,
+          account: form.account,
+          date: new Date().toISOString().split('T')[0],
+          ...categorizeTransaction(form.desc),
+        });
+        onClose();
+      }
+
+      const set = (key, val) => setForm(f => ({ ...f, [key]: val }));
+
+      return (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-end sm:items-center justify-center p-4"
+          onClick={e => e.target === e.currentTarget && onClose()}
+        >
+          <div className="bg-white rounded-2xl w-full max-w-md modal-enter shadow-2xl">
+            {/* header */}
+            <div className="flex items-center justify-between p-5 border-b border-gray-100">
+              <h3 className="text-lg font-bold text-gray-900">הוסף עסקה</h3>
+              <button
+                onClick={onClose}
+                className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-500 transition-colors"
+              >✕</button>
+            </div>
+
+            <form onSubmit={submit} className="p-5 space-y-4">
+              {/* type toggle */}
+              <div className="flex bg-gray-100 rounded-xl p-1 gap-1">
+                {[['expense','הוצאה 💸'],['income','הכנסה 💰']].map(([v,l]) => (
+                  <button
+                    key={v} type="button"
+                    onClick={() => set('type', v)}
+                    className={`flex-1 py-2 rounded-lg text-sm font-semibold transition-all ${
+                      form.type === v
+                        ? `bg-white shadow-sm ${v==='expense' ? 'text-red-500' : 'text-green-600'}`
+                        : 'text-gray-500'
+                    }`}
+                  >{l}</button>
+                ))}
+              </div>
+
+              {/* description */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">תיאור</label>
+                <input
+                  type="text" required
+                  placeholder="לדוגמה: שופרסל, וולט, ארנונה…"
+                  className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-400 focus:border-transparent"
+                  value={form.desc}
+                  onChange={e => set('desc', e.target.value)}
+                />
+                {preview && (
+                  <p className="mt-1.5 text-xs text-gray-500">
+                    קטגוריה שזוהתה:&nbsp;
+                    <span style={{ color: preview.color }} className="font-semibold">
+                      {preview.emoji} {preview.category}
+                    </span>
+                  </p>
+                )}
+              </div>
+
+              {/* amount */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">סכום (₪)</label>
+                <input
+                  type="number" required min="0.01" step="0.01" placeholder="0.00"
+                  className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-400"
+                  value={form.amount}
+                  onChange={e => set('amount', e.target.value)}
+                />
+              </div>
+
+              {/* account */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">חשבון</label>
+                <select
+                  className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-green-400"
+                  value={form.account}
+                  onChange={e => set('account', e.target.value)}
+                >
+                  {ACCOUNTS.map(a => (
+                    <option key={a.id} value={a.bank}>{a.bank} — {a.type}</option>
+                  ))}
+                </select>
+              </div>
+
+              <button
+                type="submit"
+                className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 rounded-xl transition-colors"
+              >הוסף עסקה ✓</button>
+            </form>
+          </div>
+        </div>
+      );
+    }
+
+    /* ─────────────────────────────────────────────────────────────
+       MAIN APP
+    ───────────────────────────────────────────────────────────── */
+    function App() {
+      const [transactions, setTransactions] = useState(INITIAL_TRANSACTIONS);
+      const [showModal, setShowModal]       = useState(false);
+      const [tab, setTab]                   = useState('dashboard');
+      const [newId, setNewId]               = useState(null);
+
+      const cashFlow = useMemo(
+        () => calculateCashFlow(ACCOUNTS, transactions, RECURRING_EXPENSES, EXPECTED_INCOME),
+        [transactions]
+      );
+
+      const catData  = useMemo(() => getExpensesByCategory(transactions), [transactions]);
+
+      const sorted   = useMemo(
+        () => [...transactions].sort((a, b) => new Date(b.date) - new Date(a.date)),
+        [transactions]
+      );
+
+      function handleAdd(tx) {
+        const id = Date.now();
+        setTransactions(prev => [{ ...tx, id }, ...prev]);
+        setNewId(id);
+        setTimeout(() => setNewId(null), 2500);
+      }
+
+      const spendColor =
+        cashFlow.safeToSpend > 5000 ? '#22C55E' :
+        cashFlow.safeToSpend > 1000 ? '#F59E0B' : '#EF4444';
+
+      const overspending = cashFlow.monthlyExpenses > cashFlow.monthlyIncome;
+
+      const TABS = [
+        { id:'dashboard',    label:'דשבורד',   emoji:'🏠' },
+        { id:'transactions', label:'עסקאות',   emoji:'📋' },
+        { id:'accounts',     label:'חשבונות',  emoji:'🏦' },
+        { id:'recurring',    label:'קבועים',   emoji:'🔄' },
+      ];
+
+      const totalFixed = RECURRING_EXPENSES.reduce((s, e) => s + e.amount, 0);
+
+      return (
+        <div className="min-h-screen bg-gray-50">
+
+          {/* ── NAV ── */}
+          <header className="bg-white border-b border-gray-100 sticky top-0 z-40 shadow-sm">
+            <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-2xl">💎</span>
+                <div>
+                  <p className="text-base font-extrabold text-gray-900 leading-none">FinanceIL</p>
+                  <p className="text-xs text-gray-400">ניהול כספים חכם</p>
+                </div>
+              </div>
+              <p className="text-xs text-gray-400 text-left">
+                {new Intl.DateTimeFormat('he-IL', { weekday:'long', day:'numeric', month:'long' }).format(new Date())}
+              </p>
+            </div>
+            <div className="max-w-4xl mx-auto px-4 flex">
+              {TABS.map(t => (
+                <button
+                  key={t.id}
+                  onClick={() => setTab(t.id)}
+                  className={`px-3 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+                    tab === t.id
+                      ? 'border-green-500 text-green-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  <span className="hidden sm:inline">{t.emoji} </span>{t.label}
+                </button>
+              ))}
+            </div>
+          </header>
+
+          {/* ── CONTENT ── */}
+          <main className="max-w-4xl mx-auto px-4 py-6 pb-28">
+
+            {/* ════════════════ DASHBOARD ════════════════ */}
+            {tab === 'dashboard' && (
+              <div className="space-y-5">
+
+                {/* HERO — Safe to Spend */}
+                <div
+                  className="rounded-2xl p-6 text-white"
+                  style={{
+                    background: `linear-gradient(135deg, ${spendColor} 0%, ${spendColor}bb 100%)`,
+                    boxShadow: `0 0 40px ${spendColor}44`,
+                  }}
+                >
+                  <p className="text-sm font-medium opacity-80 mb-1">בטוח להוציא היום</p>
+                  <p className="text-5xl font-extrabold mb-3 tracking-tight">
+                    {formatCurrency(cashFlow.safeToSpend)}
+                  </p>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm opacity-80">
+                    <span>💳 יתרה נזילה: {formatCurrency(cashFlow.liquidBalance)}</span>
+                    <span>📅 {cashFlow.daysRemaining} ימים לסוף חודש</span>
+                  </div>
+                  {(cashFlow.upcomingExpenses > 0 || cashFlow.upcomingIncome > 0) && (
+                    <div className="mt-3 bg-white bg-opacity-20 rounded-xl p-3 text-xs space-y-0.5">
+                      {cashFlow.upcomingExpenses > 0 && (
+                        <p>⚠️ צפוי לנכות: <strong>{formatCurrency(cashFlow.upcomingExpenses)}</strong> בהוצאות קבועות</p>
+                      )}
+                      {cashFlow.upcomingIncome > 0 && (
+                        <p>✅ צפוי להיכנס: <strong>{formatCurrency(cashFlow.upcomingIncome)}</strong> (משכורת)</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* STATS ROW */}
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    { label:'יתרה כוללת', val: cashFlow.totalBalance, cls: cashFlow.totalBalance >= 0 ? 'text-gray-800' : 'text-red-500' },
+                    { label:'הכנסות חודש', val: cashFlow.monthlyIncome,    cls:'text-green-600' },
+                    { label:'הוצאות חודש', val: cashFlow.monthlyExpenses,  cls: overspending ? 'text-red-500' : 'text-orange-500' },
+                  ].map(s => (
+                    <div key={s.label} className="bg-white rounded-xl p-4 border border-gray-100 text-center card-lift">
+                      <p className="text-xs text-gray-400 mb-1 leading-tight">{s.label}</p>
+                      <p className={`text-base font-bold ${s.cls}`}>{formatCurrency(s.val)}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* OVERSPENDING ALERT */}
+                {overspending && (
+                  <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex gap-3 items-start">
+                    <span className="text-2xl">⚠️</span>
+                    <div>
+                      <p className="text-sm font-bold text-red-700">הוצאות עולות על הכנסות החודש!</p>
+                      <p className="text-xs text-red-500 mt-0.5">
+                        גרעון של {formatCurrency(cashFlow.monthlyExpenses - cashFlow.monthlyIncome)}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* TWO-COL PANEL */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+
+                  {/* Recent transactions */}
+                  <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+                    <div className="flex items-center justify-between p-4 border-b border-gray-100">
+                      <h2 className="text-sm font-bold text-gray-900">עסקאות אחרונות</h2>
+                      <button
+                        onClick={() => setTab('transactions')}
+                        className="text-xs text-green-600 font-medium"
+                      >הכל ›</button>
+                    </div>
+                    <div className="p-2">
+                      {sorted.slice(0, 7).map(tx => (
+                        <TransactionRow key={tx.id} tx={tx} isNew={tx.id === newId} />
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Donut chart */}
+                  <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+                    <div className="p-4 border-b border-gray-100">
+                      <h2 className="text-sm font-bold text-gray-900">הוצאות לפי קטגוריה</h2>
+                      <p className="text-xs text-gray-400 mt-0.5">החודש הנוכחי</p>
+                    </div>
+                    <div className="p-4">
+                      <DonutChart data={catData} />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ════════════════ TRANSACTIONS ════════════════ */}
+            {tab === 'transactions' && (
+              <div className="bg-white rounded-2xl border border-gray-100">
+                <div className="p-4 border-b border-gray-100 flex items-center justify-between">
+                  <h2 className="font-bold text-gray-900">כל העסקאות</h2>
+                  <span className="text-xs text-gray-400">{transactions.length} עסקאות</span>
+                </div>
+                <div className="p-2">
+                  {sorted.map(tx => (
+                    <TransactionRow key={tx.id} tx={tx} isNew={tx.id === newId} />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ════════════════ ACCOUNTS ════════════════ */}
+            {tab === 'accounts' && (
+              <div className="space-y-4">
+                <div className="rounded-2xl p-6 text-white" style={{ background:'linear-gradient(135deg,#1e293b,#334155)' }}>
+                  <p className="text-sm opacity-70 mb-1">יתרה כוללת בכל החשבונות</p>
+                  <p className="text-4xl font-extrabold">{formatCurrency(cashFlow.totalBalance)}</p>
+                </div>
+                {ACCOUNTS.map(a => <AccountCard key={a.id} acc={a} />)}
+              </div>
+            )}
+
+            {/* ════════════════ RECURRING ════════════════ */}
+            {tab === 'recurring' && (
+              <div className="space-y-4">
+                <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+                  <div className="p-4 border-b border-gray-100">
+                    <h2 className="font-bold text-gray-900">הוצאות קבועות</h2>
+                    <p className="text-xs text-gray-400">סה"כ: {formatCurrency(totalFixed)} / חודש</p>
+                  </div>
+                  {RECURRING_EXPENSES.map(e => (
+                    <div key={e.id} className="flex items-center gap-3 p-4 border-b border-gray-50 last:border-0">
+                      <span className="text-2xl">{e.emoji}</span>
+                      <div className="flex-1">
+                        <p className="text-sm font-medium text-gray-800">{e.name}</p>
+                        <p className="text-xs text-gray-400">כל ה-{e.dueDay} לחודש</p>
+                      </div>
+                      <span className="text-sm font-bold text-red-500">−{formatCurrency(e.amount)}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+                  <div className="p-4 border-b border-gray-100">
+                    <h2 className="font-bold text-gray-900">הכנסות קבועות</h2>
+                  </div>
+                  {EXPECTED_INCOME.map(i => (
+                    <div key={i.id} className="flex items-center gap-3 p-4">
+                      <span className="text-2xl">{i.emoji}</span>
+                      <div className="flex-1">
+                        <p className="text-sm font-medium text-gray-800">{i.name}</p>
+                        <p className="text-xs text-gray-400">כל ה-{i.dueDay} לחודש</p>
+                      </div>
+                      <span className="text-sm font-bold text-green-600">+{formatCurrency(i.amount)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </main>
+
+          {/* ── FAB ── */}
+          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40">
+            <button
+              onClick={() => setShowModal(true)}
+              className="bg-green-500 hover:bg-green-600 active:scale-95 text-white font-bold px-7 py-3.5 rounded-full shadow-xl transition-all flex items-center gap-2 text-sm"
+            >
+              ➕ הוסף עסקה
+            </button>
+          </div>
+
+          {/* ── MODAL ── */}
+          {showModal && (
+            <AddModal onClose={() => setShowModal(false)} onAdd={handleAdd} />
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
