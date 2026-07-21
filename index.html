@@ -1428,12 +1428,14 @@ function PortfolioSection() {
     return{...h,price,live,costBasis,valUSD,valILS,plUSD,plPct,dayChg};
   }),[holdings,livePrices,dayChanges,usdIls]);
 
-  const totalCostBasis=rows.reduce((s,r)=>s+r.costBasis,0);
-  const totalValUSD=rows.reduce((s,r)=>s+r.valUSD,0);
-  const totalValILS=Math.round(totalValUSD*usdIls*100)/100;
-  const totalPL=Math.round((totalValUSD-totalCostBasis)*100)/100;
-  const totalPLPct=totalCostBasis>0?(totalPL/totalCostBasis)*100:0;
-  const donutData=rows.map(r=>({name:r.symbol,value:r.valUSD,color:r.color,emoji:''}));
+  const totalCostBasis = rows.reduce((s,r)=>s+r.costBasis, 0);
+  const totalValUSD    = rows.reduce((s,r)=>s+r.valUSD, 0);
+  const totalPortUSD   = Math.round((totalValUSD + cash)*100)/100;   // stocks + cash, all USD
+  const totalPortILS   = Math.round(totalPortUSD*usdIls*100)/100;
+  const totalPL        = Math.round((totalValUSD-totalCostBasis)*100)/100;
+  const totalPLPct     = totalCostBasis>0 ? (totalPL/totalCostBasis)*100 : 0;
+  const donutData      = rows.map(r=>({name:r.symbol, value:r.valUSD, color:r.color, emoji:''}));
+  const fmtUSD = n => '$' + (Math.round(n*100)/100).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0});
 
   function persist(h,c,hist) {
     lsSet(LS_PORTFOLIO,{holdings:h,cash:c,history:hist||history});
@@ -1605,13 +1607,16 @@ function PortfolioSection() {
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
           <div>
             <p style={{color:'rgba(255,255,255,.7)',fontSize:12,margin:'0 0 4px'}}>📊 תיק מניות</p>
-            <p style={{color:'white',fontSize:28,fontWeight:800,margin:0,lineHeight:1.1}}>
-              {fmtILS(totalValILS+cash)}
+            <p style={{color:'white',fontSize:30,fontWeight:800,margin:0,lineHeight:1.1}}>
+              {fmtUSD(totalPortUSD)}
+            </p>
+            <p style={{color:'rgba(255,255,255,.55)',fontSize:13,margin:'3px 0 0'}}>
+              {fmtILS(totalPortILS)}
             </p>
             {liveMode&&totalPL!==0&&(
               <p style={{margin:'6px 0 0',fontSize:13,fontWeight:700,
                          color:totalPL>=0?'#4ade80':'#f87171'}}>
-                {totalPL>=0?'▲':'▼'} ${Math.abs(totalPL).toFixed(0)} ({totalPLPct>=0?'+':''}{totalPLPct.toFixed(2)}%) רווח/הפסד כולל
+                {totalPL>=0?'▲':'▼'} {fmtUSD(Math.abs(totalPL))} ({totalPLPct>=0?'+':''}{totalPLPct.toFixed(2)}%)
               </p>
             )}
           </div>
@@ -1642,15 +1647,16 @@ function PortfolioSection() {
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
           <div style={{background:'rgba(255,255,255,.12)',borderRadius:10,padding:'10px 10px'}}>
             <p style={{color:'rgba(255,255,255,.6)',fontSize:10,margin:'0 0 3px'}}>עלות רכישה</p>
-            <p style={{color:'white',fontSize:13,fontWeight:700,margin:0}}>${totalCostBasis.toFixed(0)}</p>
+            <p style={{color:'white',fontSize:13,fontWeight:700,margin:0}}>{fmtUSD(totalCostBasis)}</p>
           </div>
           <div style={{background:'rgba(255,255,255,.12)',borderRadius:10,padding:'10px 10px'}}>
             <p style={{color:'rgba(255,255,255,.6)',fontSize:10,margin:'0 0 3px'}}>שווי מניות</p>
-            <p style={{color:'white',fontSize:13,fontWeight:700,margin:0}}>{fmtILS(totalValILS)}</p>
+            <p style={{color:'white',fontSize:13,fontWeight:700,margin:0}}>{fmtUSD(totalValUSD)}</p>
+            <p style={{color:'rgba(255,255,255,.45)',fontSize:9,margin:'1px 0 0'}}>{fmtILS(Math.round(totalValUSD*usdIls))}</p>
           </div>
           <div style={{background:'rgba(255,255,255,.12)',borderRadius:10,padding:'10px 10px'}}>
-            <p style={{color:'rgba(255,255,255,.6)',fontSize:10,margin:'0 0 3px'}}>💵 נזיל</p>
-            <p style={{color:'white',fontSize:13,fontWeight:700,margin:0}}>{fmtILS(cash)}</p>
+            <p style={{color:'rgba(255,255,255,.6)',fontSize:10,margin:'0 0 3px'}}>💵 מזומן</p>
+            <p style={{color:'white',fontSize:13,fontWeight:700,margin:0}}>{fmtUSD(cash)}</p>
           </div>
         </div>
       </div>
@@ -1674,9 +1680,9 @@ function PortfolioSection() {
       {/* Deposit panel */}
       {mode==='deposit'&&(
         <div className="card" style={{padding:16,marginBottom:16}} >
-          <p style={{fontWeight:700,marginBottom:12}}>💵 הפקד כסף נזיל</p>
+          <p style={{fontWeight:700,marginBottom:12}}>💵 הפקד מזומן ($)</p>
           <div style={{display:'flex',gap:10}}>
-            <input className="input input-num" type="number" placeholder="סכום ₪" value={depositAmt}
+            <input className="input input-num" type="number" placeholder="סכום $" value={depositAmt}
                    onChange={e=>setDepositAmt(e.target.value)} style={{flex:1}} autoFocus/>
             <button className="btn-primary" onClick={deposit} style={{width:'auto',padding:'13px 18px'}}>הפקד</button>
             <button className="btn-secondary" onClick={()=>setMode('view')} style={{width:'auto',padding:'13px 14px'}}>ביטול</button>
@@ -1811,14 +1817,20 @@ function PortfolioSection() {
                 {sellForm.holdingId&&sellForm.shares&&sellForm.price&&(()=>{
                   const h=holdings.find(x=>x.id===parseInt(sellForm.holdingId));
                   const pl=h?Math.round((parseFloat(sellForm.price)-h.avgCost)*parseFloat(sellForm.shares)*100)/100:0;
+                  const proceedsUSD = parseFloat(sellForm.shares)*parseFloat(sellForm.price);
                   return <div style={{background:pl>=0?'#f0fdf4':'#fef2f2',borderRadius:10,padding:'10px 14px'}}>
                     <div style={{display:'flex',justifyContent:'space-between',fontSize:13}}>
                       <span style={{color:'#6B7280'}}>תמורה</span>
-                      <span style={{fontWeight:700}}>{fmtILS(parseFloat(sellForm.shares)*parseFloat(sellForm.price))}</span>
+                      <div style={{textAlign:'left'}}>
+                        <span style={{fontWeight:700}}>{fmtUSD(proceedsUSD)}</span>
+                        <span style={{fontSize:11,color:'#9CA3AF',marginRight:6}}> · {fmtILS(Math.round(proceedsUSD*usdIls))}</span>
+                      </div>
                     </div>
                     <div style={{display:'flex',justifyContent:'space-between',fontSize:13,marginTop:4}}>
                       <span style={{color:'#6B7280'}}>רווח/הפסד</span>
-                      <span style={{fontWeight:700,color:pl>=0?'#15803d':'#dc2626'}}>{pl>=0?'+':''}{fmtILS(pl)}</span>
+                      <span style={{fontWeight:700,color:pl>=0?'#15803d':'#dc2626'}}>
+                        {pl>=0?'+':''}{fmtUSD(pl)} ({pl>=0?'+':''}{(pl/Math.max(0.01,Math.abs(proceedsUSD-pl))*100).toFixed(1)}%)
+                      </span>
                     </div>
                   </div>;
                 })()}
@@ -1879,11 +1891,14 @@ function PortfolioSection() {
                           {r.name} · {r.shares} יח׳
                         </p>
                       </div>
-                      {/* Price + value */}
+                      {/* Price + value — USD primary, ILS secondary */}
                       <div style={{textAlign:'left',flexShrink:0}}>
-                        <p style={{margin:0,fontSize:14,fontWeight:700}}>{fmtILS(r.valILS)}</p>
+                        <p style={{margin:0,fontSize:14,fontWeight:700}}>{fmtUSD(r.valUSD)}</p>
                         <p style={{margin:'2px 0 0',fontSize:11,color:'#9CA3AF'}}>
-                          {r.live?`$${r.price.toFixed(2)}`:`עלות: $${r.avgCost.toFixed(2)}`}
+                          {fmtILS(r.valILS)}
+                        </p>
+                        <p style={{margin:'1px 0 0',fontSize:10,color:'#d1d5db'}}>
+                          {r.live ? `@$${r.price.toFixed(2)}` : `עלות $${r.avgCost.toFixed(2)}`}
                         </p>
                       </div>
                     </div>
@@ -1901,11 +1916,11 @@ function PortfolioSection() {
                   </div>
                 );
               })}
-              {/* Allocation donut */}
+              {/* Allocation donut — values in USD */}
               {holdings.length>1&&donutData.length>0&&(
                 <div style={{padding:16,borderTop:'1px solid #f3f4f6'}}>
                   <p style={{fontSize:13,fontWeight:700,marginBottom:8}}>הקצאה</p>
-                  <DonutChart data={donutData} cx_label="תיק" cx_val={fmtILS(totalCost)}/>
+                  <DonutChart data={donutData} cx_label="מניות" cx_val={fmtUSD(totalValUSD)}/>
                   <div style={{display:'flex',flexDirection:'column',gap:6,marginTop:8}}>
                     {donutData.map(d=>(
                       <div key={d.name} style={{display:'flex',justifyContent:'space-between',fontSize:13}}>
@@ -1913,9 +1928,26 @@ function PortfolioSection() {
                           <span style={{width:10,height:10,borderRadius:'50%',background:d.color,display:'inline-block'}}/>
                           <span style={{color:'#374151'}}>{d.name}</span>
                         </div>
-                        <span style={{fontWeight:700}}>{fmtILS(d.value)}</span>
+                        <div style={{textAlign:'left'}}>
+                          <span style={{fontWeight:700}}>{fmtUSD(d.value)}</span>
+                          <span style={{fontSize:10,color:'#9CA3AF',marginRight:4}}> · {fmtILS(Math.round(d.value*usdIls))}</span>
+                        </div>
                       </div>
                     ))}
+                    {/* Cash row in donut legend */}
+                    {cash>0&&(
+                      <div style={{display:'flex',justifyContent:'space-between',fontSize:13,
+                                   paddingTop:6,borderTop:'1px solid #f3f4f6'}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8}}>
+                          <span style={{width:10,height:10,borderRadius:'50%',background:'#22C55E',display:'inline-block'}}/>
+                          <span style={{color:'#374151'}}>💵 מזומן</span>
+                        </div>
+                        <div style={{textAlign:'left'}}>
+                          <span style={{fontWeight:700}}>{fmtUSD(cash)}</span>
+                          <span style={{fontSize:10,color:'#9CA3AF',marginRight:4}}> · {fmtILS(Math.round(cash*usdIls))}</span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -1942,11 +1974,10 @@ function PortfolioSection() {
                   </div>
                   <div style={{textAlign:'left'}}>
                     <p style={{margin:0,fontSize:13,fontWeight:700,color:h.type==='sell'?'#15803d':h.type==='buy'?'#dc2626':'#1e40af'}}>
-                      {h.type==='buy'?'-':'+'}
-                      {fmtILS(h.cost||h.proceeds||h.amount)}
+                      {h.type==='buy'?'-':h.type==='sell'?'+':'+'}{fmtUSD(h.cost||h.proceeds||h.amount||0)}
                     </p>
                     {h.pl!==undefined&&<p style={{margin:'2px 0 0',fontSize:11,color:h.pl>=0?'#15803d':'#dc2626'}}>
-                      רווח: {h.pl>=0?'+':''}{fmtILS(h.pl)}
+                      רווח: {h.pl>=0?'+':''}{fmtUSD(h.pl)}
                     </p>}
                   </div>
                 </div>
