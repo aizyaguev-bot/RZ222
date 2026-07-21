@@ -1168,6 +1168,9 @@ function PortfolioSection() {
   const [fetching,  setFetching]  = useState(false);
   const [fetchErr,  setFetchErr]  = useState(null);
   const [lastFetch, setLastFetch] = useState(null);
+  // ── Symbol auto-lookup ──
+  const [lookup,    setLookup]    = useState({status:'idle',price:null,name:'',chg:null}); // idle|loading|found|error
+  const lookupTimer = useRef(null);
 
   async function doFetch(key) {
     if (!holdings.length) return;
@@ -1196,6 +1199,38 @@ function PortfolioSection() {
     const id=setInterval(()=>doFetch(apiKey),60000);
     return()=>clearInterval(id);
   },[liveMode,apiKey,holdings.length]);
+
+  // ── Debounced symbol lookup when typing in the Buy form ──
+  useEffect(()=>{
+    const sym=form.symbol.trim();
+    if(!sym){ setLookup({status:'idle',price:null,name:'',chg:null}); return; }
+    if(!apiKey){ setLookup({status:'no-key',price:null,name:'',chg:null}); return; }
+    clearTimeout(lookupTimer.current);
+    setLookup(l=>({...l,status:'loading'}));
+    lookupTimer.current=setTimeout(async()=>{
+      try {
+        // fetch quote + company profile in parallel
+        const [quoteRes, profileRes] = await Promise.allSettled([
+          fetchFinnhubQuote(sym, apiKey),
+          fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${sym}&token=${apiKey}`).then(r=>r.json()),
+        ]);
+        if(quoteRes.status!=='fulfilled') throw new Error('quote failed');
+        const q=quoteRes.value;
+        const companyName = profileRes.status==='fulfilled'&&profileRes.value?.name
+          ? profileRes.value.name : sym;
+        setLookup({status:'found',price:q.price,name:companyName,chg:q.changePct});
+        // auto-fill price and name
+        setForm(f=>({
+          ...f,
+          price: q.price.toFixed(2),
+          name:  f.name||companyName,
+        }));
+      } catch {
+        setLookup({status:'error',price:null,name:'',chg:null});
+      }
+    },750);
+    return()=>clearTimeout(lookupTimer.current);
+  },[form.symbol, apiKey]);
 
   function saveKey(){
     const k=keyInput.trim(); if(!k) return;
@@ -1417,19 +1452,43 @@ function PortfolioSection() {
         <div className="card" style={{padding:16,marginBottom:16}}>
           <p style={{fontWeight:700,marginBottom:12}}>🟢 רכישת נייר ערך</p>
           <div style={{display:'flex',flexDirection:'column',gap:12}}>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-              <div>
-                <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>סימול (Ticker)</label>
-                <input className="input" style={{textTransform:'uppercase',direction:'ltr'}}
-                       placeholder="NVDA" value={form.symbol}
-                       onChange={e=>setForm(f=>({...f,symbol:e.target.value.toUpperCase()}))}/>
-              </div>
-              <div>
-                <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>שם</label>
-                <input className="input" placeholder="NVIDIA" value={form.name}
-                       onChange={e=>setForm(f=>({...f,name:e.target.value}))}/>
-              </div>
+
+            {/* Symbol + auto-lookup */}
+            <div>
+              <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>סימול (Ticker)</label>
+              <input className="input" style={{textTransform:'uppercase',direction:'ltr',letterSpacing:1}}
+                     placeholder="NVDA / TEVA.TA / CHKP" value={form.symbol} autoFocus
+                     onChange={e=>{setForm(f=>({...f,symbol:e.target.value.toUpperCase()}));setLookup({status:'idle',price:null,name:'',chg:null});}}/>
+              {/* Lookup status bar */}
+              {form.symbol&&(
+                <div style={{marginTop:6,fontSize:12,display:'flex',alignItems:'center',gap:6}}>
+                  {lookup.status==='loading'&&<><span className="spin" style={{display:'inline-block'}}>⏳</span><span style={{color:'#6B7280'}}>מחפש מחיר...</span></>}
+                  {lookup.status==='found'&&(
+                    <div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,padding:'6px 10px',flex:1}}>
+                      <span style={{color:'#15803d',fontWeight:700}}>{lookup.name}</span>
+                      <span style={{color:'#6B7280',marginRight:8}}> · </span>
+                      <span style={{color:'#15803d',fontWeight:800}}>${lookup.price?.toFixed(2)}</span>
+                      {lookup.chg!==null&&<span className={lookup.chg>=0?'tag-g':'tag-r'} style={{marginRight:8}}>
+                        {lookup.chg>=0?'+':''}{lookup.chg?.toFixed(2)}%
+                      </span>}
+                      <span style={{color:'#9CA3AF',fontSize:11}}> — נשלף מ-Finnhub ✓</span>
+                    </div>
+                  )}
+                  {lookup.status==='error'&&<span style={{color:'#dc2626'}}>⚠️ סימול לא נמצא — בדוק את הטיקר</span>}
+                  {lookup.status==='no-key'&&<span style={{color:'#F59E0B'}}>⚠️ הגדר Finnhub API כדי לקבל מחיר אוטומטי</span>}
+                </div>
+              )}
             </div>
+
+            {/* Name (auto-filled or manual) */}
+            <div>
+              <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>
+                שם החברה {lookup.status==='found'&&<span style={{color:'#9CA3AF'}}>(נשלף אוטומטית)</span>}
+              </label>
+              <input className="input" placeholder="NVIDIA" value={form.name}
+                     onChange={e=>setForm(f=>({...f,name:e.target.value}))}/>
+            </div>
+
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
               <div>
                 <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>כמות מניות</label>
@@ -1437,29 +1496,43 @@ function PortfolioSection() {
                        value={form.shares} onChange={e=>setForm(f=>({...f,shares:e.target.value}))}/>
               </div>
               <div>
-                <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>מחיר לרכישה</label>
-                <input className="input input-num" type="number" step="0.01" placeholder="875.00"
-                       value={form.price} onChange={e=>setForm(f=>({...f,price:e.target.value}))}/>
+                <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>
+                  מחיר לרכישה {lookup.status==='found'&&<span style={{color:'#22C55E',fontSize:10}}>⚡ אוטומטי</span>}
+                </label>
+                <div style={{position:'relative'}}>
+                  <input className="input input-num" type="number" step="0.01" placeholder="875.00"
+                         value={form.price} onChange={e=>setForm(f=>({...f,price:e.target.value}))}
+                         style={{paddingLeft: lookup.status==='loading'?36:undefined}}/>
+                  {lookup.status==='loading'&&(
+                    <span className="spin" style={{position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',fontSize:16}}>⏳</span>
+                  )}
+                </div>
               </div>
             </div>
+
             <div>
               <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>תאריך</label>
               <input className="input" type="date" value={form.date} style={{direction:'ltr'}}
                      onChange={e=>setForm(f=>({...f,date:e.target.value}))}/>
             </div>
+
             {form.shares&&form.price&&(
-              <div style={{background:'#f0fdf4',borderRadius:10,padding:'10px 14px',display:'flex',justifyContent:'space-between'}}>
+              <div style={{background:'#f0fdf4',borderRadius:10,padding:'10px 14px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                 <span style={{fontSize:13,color:'#15803d'}}>עלות כוללת</span>
-                <span style={{fontSize:14,fontWeight:800,color:'#14532d'}}>
-                  {fmtILS(parseFloat(form.shares||0)*parseFloat(form.price||0))}
-                  {cash>0&&parseFloat(form.shares)*parseFloat(form.price)>cash&&
-                    <span style={{color:'#dc2626',fontSize:11,marginRight:8}}>⚠️ חורג מהמזומן</span>}
-                </span>
+                <div style={{textAlign:'left'}}>
+                  <span style={{fontSize:15,fontWeight:800,color:'#14532d'}}>
+                    ${(parseFloat(form.shares||0)*parseFloat(form.price||0)).toFixed(2)}
+                  </span>
+                  <span style={{fontSize:12,color:'#6B7280',marginRight:8}}> · {fmtILS(parseFloat(form.shares||0)*parseFloat(form.price||0)*usdIls)}</span>
+                  {cash>0&&parseFloat(form.shares)*parseFloat(form.price)*usdIls>cash&&
+                    <span style={{color:'#dc2626',fontSize:11,display:'block'}}>⚠️ חורג מהמזומן הנזיל</span>}
+                </div>
               </div>
             )}
+
             <div style={{display:'flex',gap:10}}>
               <button className="btn-primary" onClick={buy} style={{background:'#15803d'}}>קנה ✓</button>
-              <button className="btn-secondary" onClick={()=>setMode('view')} style={{width:'auto',padding:'13px 14px'}}>ביטול</button>
+              <button className="btn-secondary" onClick={()=>{setMode('view');setLookup({status:'idle',price:null,name:'',chg:null});}} style={{width:'auto',padding:'13px 14px'}}>ביטול</button>
             </div>
           </div>
         </div>
@@ -1475,9 +1548,15 @@ function PortfolioSection() {
                 <div>
                   <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>נייר ערך</label>
                   <select className="input" value={sellForm.holdingId}
-                          onChange={e=>setSellForm(f=>({...f,holdingId:e.target.value}))}>
+                          onChange={e=>{
+                            const id=e.target.value;
+                            const h=holdings.find(x=>x.id===parseInt(id));
+                            const lp=h?livePrices[h.symbol]:null;
+                            setSellForm(f=>({...f,holdingId:id,price:lp?lp.toFixed(2):f.price}));
+                          }}>
                     <option value="">בחר נייר...</option>
-                    {holdings.map(h=><option key={h.id} value={h.id}>{h.symbol} — {h.shares} יח׳</option>)}
+                    {holdings.map(h=><option key={h.id} value={h.id}>
+                      {h.symbol} — {h.shares} יח׳{livePrices[h.symbol]?` ($${livePrices[h.symbol].toFixed(2)})`:''}</option>)}
                   </select>
                 </div>
                 <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
