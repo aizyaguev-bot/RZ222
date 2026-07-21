@@ -62,7 +62,7 @@ const { useState, useEffect, useMemo, useCallback, useRef } = React;
 const LS = {
   DONE:'fil_done', PROFILE:'fil_profile', TX:'fil_tx',
   RECURRING:'fil_rec', INV:'fil_inv', FINNHUB:'fil_fh',
-  BUDGET:'fil_budget',
+  BUDGET:'fil_budget', GEMINI:'fil_gemini',
 };
 const LS_ALL_KEYS = [...Object.values(LS), 'fil_portfolio','fil_savings','fil_mm_list','fil_budget'];
 const lsGet = (k,fb) => { try{ const v=localStorage.getItem(k); return v!==null?JSON.parse(v):fb; }catch{ return fb; } };
@@ -914,240 +914,325 @@ function parseBankOCR(text) {
 
 /* ── PORTFOLIO/KEREN/PENSION OCR PARSERS ── */
 
-/* ── SCREENSHOT GUIDED ENTRY (no OCR — image shown alongside form) ── */
+/* ── GEMINI VISION OCR ── */
+async function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = e => resolve({ data: e.target.result.split(',')[1], mime: file.type });
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+const GEMINI_PROMPTS = {
+  bank: `You are a financial data extractor. Extract ALL transactions visible in this bank/credit card statement screenshot.
+Return ONLY a valid JSON array (no markdown, no explanation):
+[{"date":"DD/MM/YYYY","description":"merchant name","amount":number}]
+Rules: negative amount = expense/debit, positive = income/credit. Include every row visible.`,
+
+  stocks: `Extract all stock/ETF holdings from this brokerage portfolio screenshot.
+Return ONLY valid JSON array (no markdown):
+[{"symbol":"TICKER","name":"Company Name","shares":number,"price":number}]
+Use the average cost or purchase price for 'price'. If only current value shown, use that for price.`,
+
+  keren: `Extract the total current fund value (שווי/יתרה) and YTD return percentage (תשואה) from this קרן השתלמות / גמל statement.
+Return ONLY valid JSON (no markdown): {"value":number,"ytd":number}
+If YTD not visible, omit the ytd field.`,
+
+  pension: `Extract the total pension fund value (שווי/יתרה) and YTD return percentage from this pension/פנסיה statement.
+Return ONLY valid JSON (no markdown): {"value":number,"ytd":number}
+If YTD not visible, omit the ytd field.`,
+};
+
+async function callGemini(file, docType, apiKey) {
+  const { data, mime } = await fileToBase64(file);
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+  const body = {
+    contents: [{ parts: [
+      { text: GEMINI_PROMPTS[docType] || GEMINI_PROMPTS.bank },
+      { inline_data: { mime_type: mime, data } }
+    ]}],
+    generationConfig: { temperature: 0.1 }
+  };
+  const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  if (!r.ok) {
+    const err = await r.json().catch(()=>({}));
+    throw new Error(err?.error?.message || `HTTP ${r.status}`);
+  }
+  const d = await r.json();
+  let text = d.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  // strip markdown code fences if present
+  text = text.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
+  return JSON.parse(text);
+}
+
+/* ── SCREENSHOT IMPORT with Gemini Vision ── */
 function ScreenshotImport({onImport, onUpdateInvestment}) {
   const [imgUrl,   setImgUrl]   = useState(null);
+  const [imgFile,  setImgFile]  = useState(null);
   const [docType,  setDocType]  = useState(null);
-  const [stage,    setStage]    = useState('type'); // type|form|done
-  const [parsed,   setParsed]   = useState([]);
-  const [ocrErr,   setOcrErr]   = useState(null);
-  const [rows,     setRows]     = useState([]);
-  const [invResult,setInvResult]= useState(null); // {value, ytd} for keren/pension/stocks
-  const fileRef = useRef();
-
-  function chooseType(type) { setDocType(type); setStage('upload'); }
+  const [stage,    setStage]    = useState('type'); // type|upload|scanning|preview|done
+  const [apiKey,   setApiKey]   = useState(()=>lsGet(LS.GEMINI,''));
+  const [keyInput, setKeyInput] = useState('');
+  const [showKey,  setShowKey]  = useState(false);
+  const [result,   setResult]   = useState(null); // parsed OCR result
+  const [err,      setErr]      = useState(null);
+  const [prog,     setProg]     = useState('');
+  // manual transaction rows (fallback)
+  const [rows,     setRows]     = useState([{id:1,description:'',amount:'',date:new Date().toISOString().split('T')[0]}]);
+  function saveKey(k) {
+    const key=k||keyInput.trim(); if(!key) return;
+    lsSet(LS.GEMINI,key); setApiKey(key); setKeyInput(''); setShowKey(false);
+  }
+  function reset() { setStage('type');setDocType(null);setImgUrl(null);setImgFile(null);setResult(null);setErr(null);setProg('');
+    setRows([{id:1,description:'',amount:'',date:new Date().toISOString().split('T')[0]}]); }
 
   async function handleFile(file) {
-    if (!file.type.startsWith('image/')) { setOcrErr('יש להעלות תמונה (PNG/JPG)'); return; }
-    const url=URL.createObjectURL(file);
-    setImgUrl(url); setOcrErr(null); setStage('ocr'); setProg(0);
-    let ocrText = '';
+    if(!file.type.startsWith('image/')) return;
+    setImgUrl(URL.createObjectURL(file)); setImgFile(file);
+    if(!apiKey){ setStage('preview'); return; } // no key → go straight to manual
+    setStage('scanning'); setErr(null); setProg('שולח ל-Gemini AI...');
     try {
-      if (typeof Tesseract === 'undefined') throw new Error('Tesseract not loaded');
-      const result = await Tesseract.recognize(file,'heb+eng',{
-        logger: m => { if(m.status==='recognizing text') setProg(Math.round((m.progress||0)*100)); }
-      });
-      ocrText = result.data.text;
+      const data = await callGemini(file, docType, apiKey);
+      setResult(data);
+      setProg('');
+      setStage('preview');
     } catch(e) {
-      setOcrErr('OCR לא זמין — הזן ידנית');
+      setErr('שגיאה: ' + e.message);
+      setStage('preview');
     }
-
-    const effectiveType = docType || (ocrText ? detectDocType(ocrText) : 'bank');
-
-    if (effectiveType==='stocks' && ocrText) {
-      const holdings = parsePortfolioOCR(ocrText);
-      setInvResult({type:'stocks', holdings});
-    } else if ((effectiveType==='keren'||effectiveType==='pension') && ocrText) {
-      const res = parseInvestmentAccountOCR(ocrText);
-      setInvResult({type:effectiveType, ...res});
-    } else {
-      // bank transactions
-      const txs = ocrText ? parseBankOCR(ocrText) : [];
-      if (txs.length>0) setParsed(txs);
-      else { setRows([{id:1,description:'',amount:'',date:new Date().toISOString().split('T')[0]}]); setOcrErr('לא זוהו נתונים אוטומטית'); }
-    }
-    setStage('preview');
   }
+
+  function confirmResult() {
+    if(docType==='bank'||!docType) {
+      // result is array of transactions
+      const arr = Array.isArray(result) ? result : [];
+      const txs = arr.filter(r=>r.description&&r.amount).map(r=>{
+        const cat=categorize(r.description);
+        return {id:Date.now()+Math.random(),description:r.description,
+                amount:Math.round(parseFloat(r.amount)*100)/100,
+                date: r.date||new Date().toISOString().split('T')[0],
+                cat:cat.cat,color:cat.color,emoji:cat.emoji,account:'צילום מסך'};
+      });
+      // also add manual rows
+      const manual = rows.filter(r=>r.description&&r.amount).map(r=>{
+        const cat=categorize(r.description);
+        return{id:Date.now()+Math.random(),description:r.description,
+               amount:Math.round(parseFloat(r.amount)*100)/100,
+               date:r.date,cat:cat.cat,color:cat.color,emoji:cat.emoji,account:'צילום מסך'};
+      });
+      if(txs.length>0||manual.length>0){ onImport([...txs,...manual]); setStage('done'); }
+    } else if(docType==='stocks') {
+      const holdings = Array.isArray(result) ? result : [];
+      if(onUpdateInvestment) onUpdateInvestment({type:'stocks', holdings});
+      setStage('done');
+    } else {
+      // keren or pension
+      if(onUpdateInvestment) onUpdateInvestment({type:docType, value:result?.value, ytd:result?.ytd});
+      setStage('done');
+    }
+  }
+
+  const TYPES=[
+    {id:'bank',   emoji:'🏦',title:'עסקאות בנק',     sub:'הפועלים, לאומי, Max, Cal'},
+    {id:'stocks', emoji:'📊',title:'תיק מניות',       sub:'IBI, eToro, Interactive Brokers'},
+    {id:'keren',  emoji:'📈',title:'קרן השתלמות',     sub:'אלטשולר, מנורה, הראל, מגדל'},
+    {id:'pension',emoji:'🏛️',title:'פנסיה',           sub:'דוח רבעוני / שנתי'},
+  ];
 
   function addRow(){setRows(r=>[...r,{id:Date.now(),description:'',amount:'',date:new Date().toISOString().split('T')[0]}]);}
   function delRow(id){setRows(r=>r.filter(x=>x.id!==id));}
   function editRow(id,k,v){setRows(r=>r.map(x=>x.id===id?{...x,[k]:v}:x));}
 
-  function confirmBank() {
-    const finalTxs = parsed.length>0 ? parsed : rows.filter(r=>r.description&&r.amount!=='').map(r=>{
-      const amt=parseFloat(r.amount)||0;
-      const cat=categorize(r.description);
-      return{...r,id:Date.now()+Math.random(),amount:Math.round(amt*100)/100,
-             cat:cat.cat,color:cat.color,emoji:cat.emoji,account:'צילום מסך'};
-    });
-    if(finalTxs.length>0){onImport(finalTxs);setStage('done');}
-  }
-
-  function confirmInv() {
-    if(onUpdateInvestment && invResult) onUpdateInvestment(invResult);
-    setStage('done');
-  }
-
-  function reset() { setStage('type'); setDocType(null); setImgUrl(null); setParsed([]); setRows([]); setInvResult(null); setOcrErr(null); }
-
-  const typeOptions=[
-    {id:'bank',    emoji:'🏦', title:'עסקאות בנק',       sub:'תנועות בחשבון, חיוב כרטיס'},
-    {id:'stocks',  emoji:'📊', title:'תיק מניות',         sub:'IBI, eToro, Interactive Brokers'},
-    {id:'keren',   emoji:'📈', title:'קרן השתלמות',       sub:'אלטשולר, מנורה, הראל ועוד'},
-    {id:'pension', emoji:'🏛️', title:'פנסיה',             sub:'דוח שנתי / רבעוני'},
-  ];
-
   return (
     <div>
+      {/* API key setup banner */}
+      {!apiKey&&stage!=='done'&&(
+        <div style={{background:'linear-gradient(135deg,#1e3a5f,#0f172a)',borderRadius:16,
+                     padding:18,marginBottom:14,color:'white'}}>
+          <p style={{margin:'0 0 4px',fontWeight:700,fontSize:15}}>🤖 Gemini AI Vision — חינמי</p>
+          <p style={{margin:'0 0 12px',fontSize:12,opacity:.75,lineHeight:1.6}}>
+            קבל מפתח חינמי מ-<a href="https://aistudio.google.com" target="_blank" rel="noopener"
+              style={{color:'#4ade80',textDecoration:'underline'}}>aistudio.google.com</a>
+            {' '}← "Get API key" ← העתק ← הדבק כאן:
+          </p>
+          {showKey?(
+            <div style={{display:'flex',gap:8}}>
+              <input value={keyInput} onChange={e=>setKeyInput(e.target.value)}
+                     onKeyDown={e=>e.key==='Enter'&&saveKey()}
+                     placeholder="AIza..." autoFocus
+                     style={{flex:1,background:'rgba(255,255,255,.15)',border:'1px solid rgba(255,255,255,.3)',
+                             borderRadius:10,padding:'10px 12px',color:'white',fontSize:13,
+                             direction:'ltr',fontFamily:'monospace',outline:'none'}}/>
+              <button onClick={()=>saveKey()} disabled={!keyInput.trim()}
+                      style={{background:'#22C55E',border:'none',borderRadius:10,padding:'10px 18px',
+                              color:'white',fontWeight:800,cursor:'pointer',opacity:keyInput.trim()?1:.4}}>
+                שמור ✓
+              </button>
+            </div>
+          ):(
+            <button onClick={()=>setShowKey(true)}
+                    style={{background:'#22C55E',border:'none',borderRadius:10,padding:'10px 20px',
+                            color:'white',fontWeight:700,fontSize:14,cursor:'pointer'}}>
+              הגדר מפתח Gemini
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Key set — small row */}
+      {apiKey&&stage!=='done'&&(
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',
+                     fontSize:12,color:'#6B7280',marginBottom:12,padding:'6px 12px',
+                     background:'#f0fdf4',borderRadius:10}}>
+          <span>✅ Gemini AI מוגדר — זיהוי אוטומטי פעיל</span>
+          <button onClick={()=>{lsSet(LS.GEMINI,'');setApiKey('');}}
+                  style={{border:'none',background:'none',color:'#9CA3AF',fontSize:11,cursor:'pointer'}}>
+            הסר מפתח
+          </button>
+        </div>
+      )}
+
       {stage==='type'&&(
         <div>
-          <div className="card" style={{padding:20,marginBottom:14}}>
-            <p style={{fontSize:16,fontWeight:700,margin:'0 0 4px'}}>📸 סריקת צילום מסך</p>
-            <p style={{fontSize:13,color:'#6B7280',margin:'0 0 16px'}}>בחר מה להעלות:</p>
-            {typeOptions.map(o=>(
-              <button key={o.id} onClick={()=>chooseType(o.id)} style={{
-                width:'100%',display:'flex',alignItems:'center',gap:14,padding:'14px',
-                border:'1px solid #e5e7eb',borderRadius:14,background:'white',cursor:'pointer',
-                marginBottom:10,textAlign:'right'}}>
-                <span style={{fontSize:30,flexShrink:0}}>{o.emoji}</span>
-                <div>
-                  <p style={{margin:0,fontWeight:700,fontSize:14,color:'#111'}}>{o.title}</p>
-                  <p style={{margin:'2px 0 0',fontSize:12,color:'#9CA3AF'}}>{o.sub}</p>
-                </div>
-                <span style={{marginRight:'auto',color:'#d1d5db',fontSize:18}}>›</span>
-              </button>
-            ))}
-          </div>
-          <div className="card" style={{padding:14,background:'#fffbeb',border:'1px solid #fde68a'}}>
-            <p style={{fontSize:12,color:'#78350f',margin:0}}>
-              💡 <strong>טיפ:</strong> צלם ממסך מחשב לדיוק גבוה יותר. OCR עברית + אנגלית.
-              אם הזיהוי לא מושלם — תוכל לתקן ידנית לפני אישור.
-            </p>
-          </div>
+          <p style={{fontSize:15,fontWeight:700,margin:'0 0 12px'}}>📸 בחר סוג מסמך:</p>
+          {TYPES.map(o=>(
+            <button key={o.id} onClick={()=>{setDocType(o.id);setStage('upload');}} style={{
+              width:'100%',display:'flex',alignItems:'center',gap:14,padding:'14px',
+              border:'1px solid #e5e7eb',borderRadius:14,background:'white',cursor:'pointer',
+              marginBottom:10,textAlign:'right'}}>
+              <span style={{fontSize:28,flexShrink:0}}>{o.emoji}</span>
+              <div>
+                <p style={{margin:0,fontWeight:700,fontSize:14,color:'#111'}}>{o.title}</p>
+                <p style={{margin:'2px 0 0',fontSize:12,color:'#9CA3AF'}}>{o.sub}</p>
+              </div>
+              <span style={{marginRight:'auto',color:'#d1d5db',fontSize:18}}>›</span>
+            </button>
+          ))}
         </div>
       )}
 
       {stage==='upload'&&(
         <div>
           <button onClick={()=>setStage('type')} style={{border:'none',background:'none',color:'#22C55E',
-            fontSize:14,fontWeight:700,cursor:'pointer',marginBottom:12,padding:0}}>
-            ← חזור
-          </button>
+            fontSize:14,fontWeight:700,cursor:'pointer',marginBottom:12,padding:0}}>← חזור</button>
           <div className="card" style={{padding:28,textAlign:'center'}}>
-            <div style={{fontSize:44,marginBottom:8}}>{typeOptions.find(o=>o.id===docType)?.emoji}</div>
-            <p style={{fontSize:16,fontWeight:700,marginBottom:6}}>{typeOptions.find(o=>o.id===docType)?.title}</p>
-            <p style={{fontSize:13,color:'#6B7280',marginBottom:20}}>
-              {typeOptions.find(o=>o.id===docType)?.sub}
+            <span style={{fontSize:44}}>{TYPES.find(t=>t.id===docType)?.emoji||'📸'}</span>
+            <p style={{fontSize:15,fontWeight:700,margin:'8px 0 4px'}}>{TYPES.find(t=>t.id===docType)?.title}</p>
+            <p style={{fontSize:12,color:'#9CA3AF',marginBottom:20}}>
+              {apiKey?'Gemini AI יזהה את הנתונים אוטומטית':'יוצג לצד טופס הזנה ידנית'}
             </p>
             <input ref={fileRef} type="file" accept="image/*" style={{display:'none'}}
                    onChange={e=>e.target.files[0]&&handleFile(e.target.files[0])}/>
-            <button className="btn-primary" onClick={()=>fileRef.current.click()}>📂 בחר תמונה</button>
+            <button className="btn-primary" onClick={()=>fileRef.current.click()}>📂 בחר תמונה / גרור</button>
             <div onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#22C55E';}}
                  onDragLeave={e=>{e.currentTarget.style.borderColor='#e5e7eb';}}
                  onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#e5e7eb';
                              e.dataTransfer.files[0]&&handleFile(e.dataTransfer.files[0]);}}
+                 onClick={()=>fileRef.current.click()}
                  style={{border:'2px dashed #e5e7eb',borderRadius:14,padding:20,marginTop:14,
-                         color:'#9CA3AF',fontSize:13,transition:'border-color .2s',cursor:'pointer'}}
-                 onClick={()=>fileRef.current.click()}>
-              או גרור תמונה לכאן
+                         color:'#9CA3AF',fontSize:13,cursor:'pointer',transition:'border-color .2s'}}>
+              גרור תמונה לכאן
             </div>
           </div>
         </div>
       )}
 
-      {stage==='ocr'&&(
+      {stage==='scanning'&&(
         <div className="card" style={{padding:40,textAlign:'center'}}>
-          <div style={{fontSize:48,marginBottom:16}}>🔍</div>
-          <p style={{fontSize:17,fontWeight:700,marginBottom:8}}>מזהה טקסט...</p>
-          <div style={{height:8,background:'#f3f4f6',borderRadius:4,margin:'16px 0'}}>
-            <div style={{height:'100%',width:`${prog}%`,background:'#22C55E',borderRadius:4,transition:'width .3s'}}/>
-          </div>
-          <p style={{fontSize:13,color:'#9CA3AF'}}>{prog}% · OCR עברית + אנגלית</p>
-          {imgUrl&&<img src={imgUrl} style={{maxWidth:'100%',borderRadius:12,marginTop:16,maxHeight:200,objectFit:'contain'}} alt=""/>}
+          <div style={{fontSize:48,marginBottom:12}} className="spin">🤖</div>
+          <p style={{fontSize:17,fontWeight:700,marginBottom:8}}>Gemini AI מנתח...</p>
+          <p style={{fontSize:13,color:'#9CA3AF'}}>{prog}</p>
+          {imgUrl&&<img src={imgUrl} style={{maxWidth:'100%',maxHeight:180,borderRadius:12,marginTop:16,objectFit:'contain'}} alt=""/>}
         </div>
       )}
 
       {stage==='preview'&&(
         <div>
-          <div style={{display:'flex',gap:10,alignItems:'flex-start',marginBottom:14}}>
-            {imgUrl&&<img src={imgUrl} style={{width:80,height:80,borderRadius:10,objectFit:'cover',flexShrink:0}} alt=""/>}
-            <div>
-              <p style={{margin:0,fontSize:16,fontWeight:700}}>
-                {parsed.length>0?`✅ זוהו ${parsed.length} עסקאות`:'✏️ עסקאות ידניות'}
-              </p>
-              {ocrErr&&<p style={{fontSize:12,color:'#F59E0B',margin:'4px 0 0'}}>{ocrErr}</p>}
-            </div>
-          </div>
+          {/* Image thumbnail */}
+          {imgUrl&&<img src={imgUrl} style={{width:'100%',maxHeight:160,objectFit:'contain',borderRadius:12,marginBottom:12,background:'#f9fafb'}} alt=""/>}
 
-          {/* Auto-parsed results */}
-          {parsed.length>0&&(
-            <div className="card" style={{overflow:'hidden',marginBottom:14}}>
-              {parsed.map(tx=><TxRow key={tx.id} tx={tx}/>)}
+          {err&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:12,padding:'10px 14px',
+                             fontSize:13,color:'#b91c1c',marginBottom:12}}>{err}</div>}
+
+          {/* Bank transactions result */}
+          {(docType==='bank'||!docType)&&Array.isArray(result)&&result.length>0&&(
+            <div className="card" style={{overflow:'hidden',marginBottom:12}}>
+              <div style={{padding:'10px 14px',borderBottom:'1px solid #f3f4f6',display:'flex',justifyContent:'space-between'}}>
+                <span style={{fontWeight:700,fontSize:13}}>✅ זוהו {result.length} עסקאות</span>
+                <span style={{fontSize:11,color:'#9CA3AF'}}>בדוק לפני אישור</span>
+              </div>
+              {result.map((r,i)=>{
+                const cat=categorize(r.description||'');
+                const tx={id:i,description:r.description||'',amount:parseFloat(r.amount)||0,date:r.date||'',cat:cat.cat,color:cat.color,emoji:cat.emoji};
+                return <TxRow key={i} tx={tx}/>;
+              })}
             </div>
           )}
 
-          {/* Manual entry fallback */}
-          {(parsed.length===0||ocrErr)&&(
-            <div className="card" style={{padding:16,marginBottom:14}}>
-              <p style={{fontSize:13,fontWeight:700,marginBottom:10}}>הזן עסקאות ידנית:</p>
+          {/* Stocks result */}
+          {docType==='stocks'&&Array.isArray(result)&&result.length>0&&(
+            <div className="card" style={{padding:16,marginBottom:12}}>
+              <p style={{fontWeight:700,fontSize:13,margin:'0 0 10px'}}>📊 {result.length} נייר/י ערך זוהו:</p>
+              {result.map((h,i)=>(
+                <div key={i} style={{display:'flex',justifyContent:'space-between',padding:'8px 0',
+                     borderBottom:'1px solid #f3f4f6',fontSize:13}}>
+                  <span style={{fontWeight:700}}>{h.symbol}</span>
+                  <span style={{color:'#6B7280'}}>{h.name}</span>
+                  <span>{h.shares} יח׳ @ ${parseFloat(h.price||0).toFixed(2)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Keren/Pension result */}
+          {(docType==='keren'||docType==='pension')&&result?.value>0&&(
+            <div className="card" style={{padding:16,marginBottom:12,background:'#f0fdf4',border:'1px solid #bbf7d0'}}>
+              <p style={{fontWeight:700,fontSize:13,margin:'0 0 8px'}}>
+                {docType==='keren'?'📈 קרן השתלמות':'🏛️ פנסיה'}
+              </p>
+              <p style={{fontSize:24,fontWeight:800,color:'#14532d',margin:0}}>{fmtILS(result.value)}</p>
+              {result.ytd!=null&&<p style={{fontSize:13,color:'#15803d',marginTop:4}}>תשואה YTD: {result.ytd>0?'+':''}{result.ytd}%</p>}
+            </div>
+          )}
+
+          {/* Manual entry (always shown for bank; shown as addition for others if no result) */}
+          {(docType==='bank'||!docType||(result===null&&!err))&&(
+            <div className="card" style={{padding:14,marginBottom:12}}>
+              <p style={{fontSize:13,fontWeight:700,margin:'0 0 10px'}}>
+                {result===null?'הזן ידנית:':'+  הוסף ידנית:'}
+              </p>
               {rows.map(r=>(
                 <div key={r.id} style={{display:'grid',gridTemplateColumns:'1fr 80px 90px 32px',gap:6,marginBottom:8}}>
                   <input className="input" placeholder="תיאור" value={r.description}
-                         onChange={e=>editRow(r.id,'description',e.target.value)}
-                         style={{fontSize:12,padding:'8px 10px'}}/>
+                         onChange={e=>editRow(r.id,'description',e.target.value)} style={{fontSize:12,padding:'8px 10px'}}/>
                   <input className="input input-num" type="number" placeholder="סכום" value={r.amount}
-                         onChange={e=>editRow(r.id,'amount',e.target.value)}
-                         style={{fontSize:12,padding:'8px 8px'}}/>
+                         onChange={e=>editRow(r.id,'amount',e.target.value)} style={{fontSize:12,padding:'8px 8px'}}/>
                   <input className="input" type="date" value={r.date} style={{direction:'ltr',fontSize:11,padding:'8px 6px'}}
                          onChange={e=>editRow(r.id,'date',e.target.value)}/>
-                  <button onClick={()=>delRow(r.id)}
-                          style={{border:'none',background:'#fee2e2',color:'#dc2626',borderRadius:8,cursor:'pointer',fontSize:14}}>✕</button>
+                  <button onClick={()=>delRow(r.id)} style={{border:'none',background:'#fee2e2',color:'#dc2626',borderRadius:8,cursor:'pointer',fontSize:14}}>✕</button>
                 </div>
               ))}
               <button onClick={addRow} style={{border:'1px dashed #d1d5db',background:'none',borderRadius:10,
-                padding:'8px',width:'100%',fontSize:13,color:'#6B7280',cursor:'pointer',marginTop:4}}>
-                + הוסף שורה
+                padding:'8px',width:'100%',fontSize:13,color:'#6B7280',cursor:'pointer'}}>
+                + שורה
               </button>
             </div>
           )}
 
-          {/* Investment result preview (keren/pension/stocks) */}
-          {invResult&&(
-            <div className="card" style={{padding:16,marginBottom:14,background:'#f0fdf4',border:'1px solid #bbf7d0'}}>
-              <p style={{fontWeight:700,fontSize:14,margin:'0 0 10px'}}>
-                {invResult.type==='stocks'?'📊 מניות שזוהו'
-                 :invResult.type==='keren'?'📈 קרן השתלמות'
-                 :'🏛️ פנסיה'}
-              </p>
-              {invResult.type==='stocks'&&invResult.holdings?.length>0&&(
-                <div>
-                  {invResult.holdings.map((h,i)=>(
-                    <div key={i} style={{display:'flex',justifyContent:'space-between',padding:'6px 0',
-                         borderBottom:'1px solid #e5e7eb',fontSize:13}}>
-                      <span style={{fontWeight:700}}>{h.symbol}</span>
-                      <span>{h.shares} יח׳ @ ${h.avgCost?.toFixed(2)}</span>
-                    </div>
-                  ))}
-                  <p style={{fontSize:11,color:'#6B7280',marginTop:8}}>⚠️ בדוק שהנתונים נכונים לפני אישור</p>
-                </div>
-              )}
-              {(invResult.type==='keren'||invResult.type==='pension')&&(
-                <div>
-                  <p style={{fontSize:20,fontWeight:800,color:'#14532d'}}>{fmtILS(invResult.value||0)}</p>
-                  {invResult.ytd!=null&&<p style={{fontSize:13,color:'#15803d'}}>תשואה YTD: {invResult.ytd>0?'+':''}{invResult.ytd}%</p>}
-                </div>
-              )}
-            </div>
-          )}
-
           <div style={{display:'flex',gap:10}}>
-            <button className="btn-secondary" onClick={()=>{setStage('upload');setParsed([]);setRows([]);setOcrErr(null);setInvResult(null);}}
+            <button className="btn-secondary" onClick={()=>{setStage('upload');setResult(null);setErr(null);}}
                     style={{width:'auto',padding:'14px 18px'}}>← חזור</button>
-            {invResult
-              ? <button className="btn-primary" onClick={confirmInv}>שמור נתונים ✓</button>
-              : <button className="btn-primary" onClick={confirmBank}>
-                  ייבא {parsed.length||rows.filter(r=>r.description).length} עסקאות ✓
-                </button>
-            }
+            <button className="btn-primary" onClick={confirmResult}>אשר ושמור ✓</button>
           </div>
         </div>
       )}
 
       {stage==='done'&&(
         <div className="card" style={{padding:40,textAlign:'center'}}>
-          <div style={{fontSize:56,marginBottom:12}}>🎉</div>
-          <p style={{fontSize:18,fontWeight:800,marginBottom:8}}>הנתונים נשמרו!</p>
-          <button className="btn-primary" onClick={reset}>סרוק צילום נוסף</button>
+          <div style={{fontSize:56,marginBottom:12}}>✅</div>
+          <p style={{fontSize:18,fontWeight:800,marginBottom:8}}>נשמר בהצלחה!</p>
+          <button className="btn-primary" onClick={reset}>סרוק עוד</button>
         </div>
       )}
     </div>
