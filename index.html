@@ -1459,8 +1459,6 @@ function PortfolioSection() {
   }
 
   const totalCost = holdings.reduce((s,h)=>s+h.shares*h.avgCost,0);
-  // We don't have live prices here unless user entered current price - show cost basis
-  const donutData = holdings.map(h=>({name:h.symbol,value:Math.round(h.shares*h.avgCost*100)/100,color:h.color,emoji:''}));
 
   return (
     <div>
