@@ -5,12 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
   <title>FinanceIL</title>
   <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
-  <script src="https://unpkg.com/react@18.2.0/umd/react.development.js"></script>
-  <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.development.js"></script>
+  <!-- React production builds (7KB + 130KB vs 1.1MB dev) -->
+  <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <!-- Babel - needed synchronously before the text/babel script runs -->
   <script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"></script>
+  <!-- Tailwind - synchronous so it scans all JSX class names -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <script src="https://unpkg.com/tesseract.js@4/dist/tesseract.min.js"></script>
+  <!-- XLSX + Tesseract - large, only needed for import tab; defer so they don't block render -->
+  <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
+  <script src="https://unpkg.com/tesseract.js@4/dist/tesseract.min.js" defer></script>
   <script>tailwind.config={theme:{extend:{fontFamily:{sans:['Heebo','sans-serif']}}}};</script>
   <style>
     *{font-family:'Heebo','Segoe UI',sans-serif;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
