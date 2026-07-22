@@ -1064,6 +1064,9 @@ function ScreenshotImport({onImport, onUpdateInvestment}) {
   const [keyTesting, setKeyTesting] = useState(false);
   const [keyStatus,  setKeyStatus]  = useState(null); // null | 'ok' | 'error'
   const [keyErrMsg,  setKeyErrMsg]  = useState('');
+  // Ref to hold the key being tested so the save-effect always reads the right value
+  // even if keyInput state changes during the async test.
+  const pendingKeyRef = useRef('');
 
   async function testKey(key) {
     setKeyTesting(true); setKeyStatus(null); setKeyErrMsg('');
@@ -1097,14 +1100,16 @@ function ScreenshotImport({onImport, onUpdateInvestment}) {
 
   async function saveKey(k) {
     const key=k||keyInput.trim(); if(!key) return;
+    // Store the key in a ref so the effect below always reads the correct value
+    // regardless of any React re-renders that may flush between now and then.
+    pendingKeyRef.current=key;
     await testKey(key);
-    // Only save if test passed (keyStatus will be set after testKey resolves)
-    // We read the result via a closure trick below
   }
-  // Actually save after successful test
+  // Save after a successful test — reads from ref, not from potentially-stale closure
   useEffect(()=>{
-    if(keyStatus==='ok'&&keyInput.trim()){
-      const key=keyInput.trim();
+    if(keyStatus==='ok'&&pendingKeyRef.current){
+      const key=pendingKeyRef.current;
+      pendingKeyRef.current='';
       lsSet(LS.GEMINI,key); setApiKey(key); setKeyInput(''); setShowKey(false);
     }
   },[keyStatus]);
@@ -1489,7 +1494,11 @@ function ExcelImport({onImport, onBack}) {
       const rawDate=row[cols.date];
       let date;
       if(rawDate instanceof Date) date=rawDate.toISOString().split('T')[0];
-      else { const d=new Date(rawDate); date=isNaN(d)?new Date().toISOString().split('T')[0]:d.toISOString().split('T')[0]; }
+      else {
+        // parseDateIL handles DD/MM/YYYY and DD.MM.YYYY used by Israeli banks.
+        // new Date(string) fails for those formats in V8 (returns Invalid Date).
+        date=parseDateIL(String(rawDate))||new Date().toISOString().split('T')[0];
+      }
       const desc=String(row[cols.desc]||'').trim();
       if(!desc||amount===0) continue;
       const cat=categorize(desc);
