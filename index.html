@@ -1200,78 +1200,118 @@ function ScreenshotImport({onImport, onUpdateInvestment}) {
           {/* Image thumbnail */}
           {imgUrl&&<img src={imgUrl} style={{width:'100%',maxHeight:160,objectFit:'contain',borderRadius:12,marginBottom:12,background:'#f9fafb'}} alt=""/>}
 
-          {err&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:12,padding:'10px 14px',
-                             fontSize:13,color:'#b91c1c',marginBottom:12}}>{err}</div>}
+          {err&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',borderRadius:12,padding:'10px 14px',fontSize:13,color:'#b91c1c',marginBottom:12}}>{err}</div>}
 
-          {/* Bank transactions result */}
-          {(docType==='bank'||!docType)&&Array.isArray(result)&&result.length>0&&(
-            <div className="card" style={{overflow:'hidden',marginBottom:12}}>
-              <div style={{padding:'10px 14px',borderBottom:'1px solid #f3f4f6',display:'flex',justifyContent:'space-between'}}>
-                <span style={{fontWeight:700,fontSize:13}}>✅ זוהו {result.length} עסקאות</span>
-                <span style={{fontSize:11,color:'#9CA3AF'}}>בדוק לפני אישור</span>
+          {/* ── BANK: Gemini results + editable rows ── */}
+          {(docType==='bank'||!docType)&&(
+            <div>
+              {Array.isArray(result)&&result.length>0&&(
+                <div className="card" style={{overflow:'hidden',marginBottom:12}}>
+                  <div style={{padding:'10px 14px',borderBottom:'1px solid #f3f4f6',display:'flex',justifyContent:'space-between'}}>
+                    <span style={{fontWeight:700,fontSize:13}}>✅ Gemini זיהה {result.length} עסקאות</span>
+                    <span style={{fontSize:11,color:'#9CA3AF'}}>בדוק לפני אישור</span>
+                  </div>
+                  {result.map((r,i)=>{
+                    const cat=categorize(r.description||'');
+                    return <TxRow key={i} tx={{id:i,description:r.description||'',amount:parseFloat(r.amount)||0,date:r.date||'',cat:cat.cat,color:cat.color,emoji:cat.emoji}}/>;
+                  })}
+                </div>
+              )}
+              <div className="card" style={{padding:14,marginBottom:12}}>
+                <p style={{fontSize:13,fontWeight:700,margin:'0 0 10px'}}>{result===null?'הזן עסקאות ידנית:':'+ הוסף עסקאות ידנית:'}</p>
+                {rows.map(r=>(
+                  <div key={r.id} style={{display:'grid',gridTemplateColumns:'1fr 80px 90px 32px',gap:6,marginBottom:8}}>
+                    <input className="input" placeholder="תיאור" value={r.description} onChange={e=>editRow(r.id,'description',e.target.value)} style={{fontSize:12,padding:'8px 10px'}}/>
+                    <input className="input input-num" type="number" placeholder="סכום" value={r.amount} onChange={e=>editRow(r.id,'amount',e.target.value)} style={{fontSize:12,padding:'8px 8px'}}/>
+                    <input className="input" type="date" value={r.date} style={{direction:'ltr',fontSize:11,padding:'8px 6px'}} onChange={e=>editRow(r.id,'date',e.target.value)}/>
+                    <button onClick={()=>delRow(r.id)} style={{border:'none',background:'#fee2e2',color:'#dc2626',borderRadius:8,cursor:'pointer',fontSize:14}}>✕</button>
+                  </div>
+                ))}
+                <button onClick={addRow} style={{border:'1px dashed #d1d5db',background:'none',borderRadius:10,padding:'8px',width:'100%',fontSize:13,color:'#6B7280',cursor:'pointer'}}>+ שורה</button>
               </div>
-              {result.map((r,i)=>{
-                const cat=categorize(r.description||'');
-                const tx={id:i,description:r.description||'',amount:parseFloat(r.amount)||0,date:r.date||'',cat:cat.cat,color:cat.color,emoji:cat.emoji};
-                return <TxRow key={i} tx={tx}/>;
-              })}
             </div>
           )}
 
-          {/* Stocks result */}
-          {docType==='stocks'&&Array.isArray(result)&&result.length>0&&(
-            <div className="card" style={{padding:16,marginBottom:12}}>
-              <p style={{fontWeight:700,fontSize:13,margin:'0 0 10px'}}>📊 {result.length} נייר/י ערך זוהו:</p>
-              {result.map((h,i)=>(
-                <div key={i} style={{display:'flex',justifyContent:'space-between',padding:'8px 0',
-                     borderBottom:'1px solid #f3f4f6',fontSize:13}}>
-                  <span style={{fontWeight:700}}>{h.symbol}</span>
-                  <span style={{color:'#6B7280'}}>{h.name}</span>
-                  <span>{h.shares} יח׳ @ ${parseFloat(h.price||0).toFixed(2)}</span>
+          {/* ── STOCKS: Gemini results + manual stock rows ── */}
+          {docType==='stocks'&&(()=>{
+            const stockRows = result && Array.isArray(result) ? result : [];
+            return (
+              <div>
+                {stockRows.length>0&&(
+                  <div className="card" style={{padding:14,marginBottom:12,background:'#f0fdf4',border:'1px solid #bbf7d0'}}>
+                    <p style={{fontWeight:700,fontSize:13,margin:'0 0 10px'}}>✅ Gemini זיהה {stockRows.length} ני"ע:</p>
+                    {stockRows.map((h,i)=>(
+                      <div key={i} style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid #d1fae5',fontSize:13}}>
+                        <span style={{fontWeight:700}}>{h.symbol}</span>
+                        <span style={{color:'#6B7280',flex:1,padding:'0 8px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{h.name}</span>
+                        <span>{h.shares} יח׳ @ ${parseFloat(h.price||0).toFixed(2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {stockRows.length===0&&(
+                  <div className="card" style={{padding:14,marginBottom:12}}>
+                    <p style={{fontWeight:700,fontSize:13,margin:'0 0 10px'}}>הזן ני"ע ידנית מהתמונה:</p>
+                    {rows.map(r=>(
+                      <div key={r.id} style={{display:'grid',gridTemplateColumns:'80px 1fr 80px 80px 32px',gap:6,marginBottom:8}}>
+                        <input className="input" placeholder="סימול" value={r.symbol||''} onChange={e=>editRow(r.id,'symbol',e.target.value.toUpperCase())} style={{fontSize:12,padding:'8px 8px',direction:'ltr'}}/>
+                        <input className="input" placeholder="שם חברה" value={r.name||''} onChange={e=>editRow(r.id,'name',e.target.value)} style={{fontSize:12,padding:'8px 8px'}}/>
+                        <input className="input input-num" type="number" step="0.001" placeholder="כמות" value={r.shares||''} onChange={e=>editRow(r.id,'shares',e.target.value)} style={{fontSize:12,padding:'8px 6px'}}/>
+                        <input className="input input-num" type="number" step="0.01" placeholder="מחיר$" value={r.price||''} onChange={e=>editRow(r.id,'price',e.target.value)} style={{fontSize:12,padding:'8px 6px'}}/>
+                        <button onClick={()=>delRow(r.id)} style={{border:'none',background:'#fee2e2',color:'#dc2626',borderRadius:8,cursor:'pointer',fontSize:14}}>✕</button>
+                      </div>
+                    ))}
+                    <button onClick={()=>setRows(r=>[...r,{id:Date.now(),symbol:'',name:'',shares:'',price:''}])}
+                            style={{border:'1px dashed #d1d5db',background:'none',borderRadius:10,padding:'8px',width:'100%',fontSize:13,color:'#6B7280',cursor:'pointer'}}>
+                      + הוסף נייר ערך
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* ── KEREN / PENSION: Gemini value + manual fallback ── */}
+          {(docType==='keren'||docType==='pension')&&(()=>{
+            const [manVal,setManVal]=useState(result?.value||'');
+            const [manYtd,setManYtd]=useState(result?.ytd!=null?String(result.ytd):'');
+            // sync state when result arrives
+            useEffect(()=>{ if(result?.value) setManVal(result.value); if(result?.ytd!=null) setManYtd(String(result.ytd)); },[result]);
+            return (
+              <div className="card" style={{padding:16,marginBottom:12}}>
+                <p style={{fontWeight:700,fontSize:14,margin:'0 0 4px'}}>{docType==='keren'?'📈 קרן השתלמות':'🏛️ פנסיה'}</p>
+                {result?.value>0&&<p style={{fontSize:11,color:'#22C55E',margin:'0 0 10px'}}>✅ Gemini זיהה — בדוק ותקן אם צריך</p>}
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                  <div>
+                    <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>שווי נוכחי ₪</label>
+                    <input className="input input-num" type="number" placeholder="0" value={manVal}
+                           onChange={e=>{setManVal(e.target.value);setResult(r=>({...r,value:parseFloat(e.target.value)||0}));}}/>
+                  </div>
+                  <div>
+                    <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>תשואה YTD %</label>
+                    <input className="input input-num" type="number" step="0.1" placeholder="0.0" value={manYtd}
+                           onChange={e=>{setManYtd(e.target.value);setResult(r=>({...r,ytd:parseFloat(e.target.value)||null}));}}/>
+                  </div>
                 </div>
-              ))}
-            </div>
-          )}
-
-          {/* Keren/Pension result */}
-          {(docType==='keren'||docType==='pension')&&result?.value>0&&(
-            <div className="card" style={{padding:16,marginBottom:12,background:'#f0fdf4',border:'1px solid #bbf7d0'}}>
-              <p style={{fontWeight:700,fontSize:13,margin:'0 0 8px'}}>
-                {docType==='keren'?'📈 קרן השתלמות':'🏛️ פנסיה'}
-              </p>
-              <p style={{fontSize:24,fontWeight:800,color:'#14532d',margin:0}}>{fmtILS(result.value)}</p>
-              {result.ytd!=null&&<p style={{fontSize:13,color:'#15803d',marginTop:4}}>תשואה YTD: {result.ytd>0?'+':''}{result.ytd}%</p>}
-            </div>
-          )}
-
-          {/* Manual entry (always shown for bank; shown as addition for others if no result) */}
-          {(docType==='bank'||!docType||(result===null&&!err))&&(
-            <div className="card" style={{padding:14,marginBottom:12}}>
-              <p style={{fontSize:13,fontWeight:700,margin:'0 0 10px'}}>
-                {result===null?'הזן ידנית:':'+  הוסף ידנית:'}
-              </p>
-              {rows.map(r=>(
-                <div key={r.id} style={{display:'grid',gridTemplateColumns:'1fr 80px 90px 32px',gap:6,marginBottom:8}}>
-                  <input className="input" placeholder="תיאור" value={r.description}
-                         onChange={e=>editRow(r.id,'description',e.target.value)} style={{fontSize:12,padding:'8px 10px'}}/>
-                  <input className="input input-num" type="number" placeholder="סכום" value={r.amount}
-                         onChange={e=>editRow(r.id,'amount',e.target.value)} style={{fontSize:12,padding:'8px 8px'}}/>
-                  <input className="input" type="date" value={r.date} style={{direction:'ltr',fontSize:11,padding:'8px 6px'}}
-                         onChange={e=>editRow(r.id,'date',e.target.value)}/>
-                  <button onClick={()=>delRow(r.id)} style={{border:'none',background:'#fee2e2',color:'#dc2626',borderRadius:8,cursor:'pointer',fontSize:14}}>✕</button>
-                </div>
-              ))}
-              <button onClick={addRow} style={{border:'1px dashed #d1d5db',background:'none',borderRadius:10,
-                padding:'8px',width:'100%',fontSize:13,color:'#6B7280',cursor:'pointer'}}>
-                + שורה
-              </button>
-            </div>
-          )}
+              </div>
+            );
+          })()}
 
           <div style={{display:'flex',gap:10}}>
-            <button className="btn-secondary" onClick={()=>{setStage('upload');setResult(null);setErr(null);}}
+            <button className="btn-secondary" onClick={()=>{setStage('upload');setResult(null);setErr(null);setRows([{id:1,description:'',amount:'',date:new Date().toISOString().split('T')[0]}]);}}
                     style={{width:'auto',padding:'14px 18px'}}>← חזור</button>
-            <button className="btn-primary" onClick={confirmResult}>אשר ושמור ✓</button>
+            <button className="btn-primary" onClick={()=>{
+              if(docType==='stocks'&&(!result||!Array.isArray(result)||result.length===0)){
+                // use manual rows
+                const h=rows.filter(r=>r.symbol&&r.shares).map(r=>({
+                  symbol:r.symbol.toUpperCase(),name:r.name||r.symbol.toUpperCase(),
+                  shares:parseFloat(r.shares)||0,price:parseFloat(r.price)||0
+                }));
+                if(h.length>0&&onUpdateInvestment){onUpdateInvestment({type:'stocks',holdings:h});setStage('done');}
+              } else {
+                confirmResult();
+              }
+            }}>אשר ושמור ✓</button>
           </div>
         </div>
       )}
@@ -1375,8 +1415,15 @@ function ImportTab({onImport, onUpdateInv}) {
       } catch { setErr('לא ניתן לטעון ספריית Excel — בדוק חיבור אינטרנט'); return; }
     }
     try {
-      const buf=await file.arrayBuffer();
-      const wb=XLSX.read(buf,{type:'array',cellDates:true});
+      let wb;
+      if(file.name.toLowerCase().endsWith('.csv')||file.type==='text/csv'||file.type==='text/plain') {
+        // CSV: read as text for better Hebrew support
+        const text=await file.text();
+        wb=XLSX.read(text,{type:'string',raw:false});
+      } else {
+        const buf=await file.arrayBuffer();
+        wb=XLSX.read(buf,{type:'array',cellDates:true});
+      }
       if(!wb.SheetNames.length) throw new Error('הקובץ לא מכיל גיליונות');
       const ws=wb.Sheets[wb.SheetNames[0]];
       const data=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
@@ -1446,7 +1493,7 @@ function ImportTab({onImport, onUpdateInv}) {
               מבנק הפועלים, לאומי, דיסקונט, Max ועוד.<br/>
               Excel (xlsx/xls) או CSV
             </p>
-            <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv"
+            <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,.CSV"
                    style={{display:'none'}} onChange={e=>e.target.files[0]&&handleFile(e.target.files[0])}/>
             <button className="btn-primary" onClick={()=>fileRef.current.click()}>
               📂 בחר קובץ
