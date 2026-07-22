@@ -1013,6 +1013,39 @@ async function callGemini(file, docType, apiKey) {
   throw lastErr || new Error('כל הדגמים נכשלו');
 }
 
+/* ── KEREN/PENSION FORM — own component so hooks are valid ── */
+function KerenPensionForm({docType, geminiResult, onUpdate}) {
+  const [val, setVal] = useState(geminiResult?.value ? String(geminiResult.value) : '');
+  const [ytd, setYtd] = useState(geminiResult?.ytd != null ? String(geminiResult.ytd) : '');
+  useEffect(()=>{
+    if(geminiResult?.value) setVal(String(geminiResult.value));
+    if(geminiResult?.ytd != null) setYtd(String(geminiResult.ytd));
+  },[geminiResult]);
+  function upd(v,y) {
+    onUpdate({value:parseFloat(v)||0, ytd:y!==''?parseFloat(y)||null:null});
+  }
+  return (
+    <div className="card" style={{padding:16,marginBottom:12}}>
+      <p style={{fontWeight:700,fontSize:14,margin:'0 0 4px'}}>
+        {docType==='keren'?'📈 קרן השתלמות':'🏛️ פנסיה'}
+      </p>
+      {geminiResult?.value>0&&<p style={{fontSize:11,color:'#22C55E',margin:'0 0 10px'}}>✅ Gemini זיהה — בדוק ותקן אם צריך</p>}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+        <div>
+          <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>שווי נוכחי ₪</label>
+          <input className="input input-num" type="number" placeholder="0" value={val}
+                 onChange={e=>{setVal(e.target.value);upd(e.target.value,ytd);}}/>
+        </div>
+        <div>
+          <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>תשואה YTD %</label>
+          <input className="input input-num" type="number" step="0.1" placeholder="0.0" value={ytd}
+                 onChange={e=>{setYtd(e.target.value);upd(val,e.target.value);}}/>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── SCREENSHOT IMPORT with Gemini Vision ── */
 function ScreenshotImport({onImport, onUpdateInvestment}) {
   const [imgUrl,   setImgUrl]   = useState(null);
@@ -1335,31 +1368,10 @@ function ScreenshotImport({onImport, onUpdateInvestment}) {
             );
           })()}
 
-          {/* ── KEREN / PENSION: Gemini value + manual fallback ── */}
-          {(docType==='keren'||docType==='pension')&&(()=>{
-            const [manVal,setManVal]=useState(result?.value||'');
-            const [manYtd,setManYtd]=useState(result?.ytd!=null?String(result.ytd):'');
-            // sync state when result arrives
-            useEffect(()=>{ if(result?.value) setManVal(result.value); if(result?.ytd!=null) setManYtd(String(result.ytd)); },[result]);
-            return (
-              <div className="card" style={{padding:16,marginBottom:12}}>
-                <p style={{fontWeight:700,fontSize:14,margin:'0 0 4px'}}>{docType==='keren'?'📈 קרן השתלמות':'🏛️ פנסיה'}</p>
-                {result?.value>0&&<p style={{fontSize:11,color:'#22C55E',margin:'0 0 10px'}}>✅ Gemini זיהה — בדוק ותקן אם צריך</p>}
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-                  <div>
-                    <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>שווי נוכחי ₪</label>
-                    <input className="input input-num" type="number" placeholder="0" value={manVal}
-                           onChange={e=>{setManVal(e.target.value);setResult(r=>({...r,value:parseFloat(e.target.value)||0}));}}/>
-                  </div>
-                  <div>
-                    <label style={{fontSize:12,color:'#6B7280',display:'block',marginBottom:4}}>תשואה YTD %</label>
-                    <input className="input input-num" type="number" step="0.1" placeholder="0.0" value={manYtd}
-                           onChange={e=>{setManYtd(e.target.value);setResult(r=>({...r,ytd:parseFloat(e.target.value)||null}));}}/>
-                  </div>
-                </div>
-              </div>
-            );
-          })()}
+          {/* ── KEREN / PENSION: separate component (hooks cannot live in JSX IIFE) ── */}
+          {(docType==='keren'||docType==='pension')&&(
+            <KerenPensionForm docType={docType} geminiResult={result} onUpdate={setResult}/>
+          )}
 
           <div style={{display:'flex',gap:10}}>
             <button className="btn-secondary" onClick={()=>{setStage('upload');setResult(null);setErr(null);setRows([{id:1,description:'',amount:'',date:new Date().toISOString().split('T')[0]}]);}}
@@ -1391,9 +1403,206 @@ function ScreenshotImport({onImport, onUpdateInvestment}) {
   );
 }
 
-/* ── EXCEL IMPORT ── */
+/* ── EXCEL IMPORT (own component — hooks must not follow conditional returns) ── */
+function ExcelImport({onImport, onBack}) {
+  const [stage,setStage]=useState('upload');
+  const [rows,setRows]=useState([]);
+  const [cols,setCols]=useState({date:-1,desc:-1,debit:-1,credit:-1,amount:-1});
+  const [preview,setPreview]=useState([]);
+  const [err,setErr]=useState(null);
+  const fileRef=useRef();
+
+  async function handleFile(file) {
+    setErr(null);
+    if (typeof XLSX === 'undefined') {
+      setErr('⏳ טוען ספריית Excel... נסה שוב בעוד שנייה');
+      try {
+        await new Promise((res,rej)=>{
+          const s=document.createElement('script');
+          s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+          s.onload=res; s.onerror=rej;
+          document.head.appendChild(s);
+        });
+        setErr(null);
+      } catch { setErr('לא ניתן לטעון ספריית Excel — בדוק חיבור אינטרנט'); return; }
+    }
+    try {
+      let wb;
+      if(file.name.toLowerCase().endsWith('.csv')||file.type==='text/csv'||file.type==='text/plain'){
+        const text=await file.text();
+        wb=XLSX.read(text,{type:'string',raw:false});
+      } else {
+        const buf=await file.arrayBuffer();
+        wb=XLSX.read(buf,{type:'array',cellDates:true});
+      }
+      if(!wb.SheetNames.length) throw new Error('הקובץ לא מכיל גיליונות');
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const data=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+      const clean=data.filter(r=>r.some(c=>String(c).trim()!==''));
+      if(!clean.length) throw new Error('הקובץ ריק');
+      setRows(clean);
+      const hdr=clean[0].map(c=>String(c).toLowerCase().trim());
+      const find=(...terms)=>hdr.findIndex(h=>terms.some(t=>h.includes(t)));
+      setCols({
+        date:  find('תאריך','date'),
+        desc:  find('תיאור','פירוט','שם','description','אסמכתא'),
+        debit: find('חיוב','הוצאה','debit'),
+        credit:find('זכות','הכנסה','credit'),
+        amount:find('סכום','amount'),
+      });
+      setStage('map');
+    } catch(e) { setErr('שגיאה בקריאת הקובץ: '+e.message); }
+  }
+
+  function buildPreview() {
+    const parsed=[];
+    const hdrRow=rows[0]||[];
+    for(let i=1;i<rows.length;i++){
+      const row=rows[i];
+      let amount=0;
+      if(cols.amount>=0){
+        amount=parseFloat(String(row[cols.amount]).replace(/[^\d.-]/g,''))||0;
+      } else {
+        const cr=parseFloat(String(row[cols.credit]||'').replace(/[^\d.-]/g,''))||0;
+        const db=parseFloat(String(row[cols.debit]||'').replace(/[^\d.-]/g,''))||0;
+        amount=cr>0?cr:(db>0?-db:0);
+      }
+      const rawDate=row[cols.date];
+      let date;
+      if(rawDate instanceof Date) date=rawDate.toISOString().split('T')[0];
+      else { const d=new Date(rawDate); date=isNaN(d)?new Date().toISOString().split('T')[0]:d.toISOString().split('T')[0]; }
+      const desc=String(row[cols.desc]||'').trim();
+      if(!desc||amount===0) continue;
+      const cat=categorize(desc);
+      parsed.push({id:Date.now()+i,description:desc,amount:Math.round(amount*100)/100,
+                   date,cat:cat.cat,color:cat.color,emoji:cat.emoji,account:'ייבוא'});
+    }
+    setPreview(parsed);
+    setStage('preview');
+  }
+
+  const hdrRow=rows[0]||[];
+
+  return (
+    <div style={{padding:16,display:'flex',flexDirection:'column',gap:16}}>
+      <button onClick={onBack} style={{border:'none',background:'none',color:'#22C55E',
+        fontSize:14,fontWeight:700,cursor:'pointer',padding:0,marginBottom:-8}}>← חזור לבחירת שיטה</button>
+
+      {stage==='upload'&&(
+        <div>
+          <div className="card" style={{padding:32,textAlign:'center'}}>
+            <div style={{fontSize:48,marginBottom:12}}>📥</div>
+            <p style={{fontSize:18,fontWeight:700,marginBottom:8}}>ייבא קובץ עסקאות</p>
+            <p style={{fontSize:13,color:'#6B7280',marginBottom:24,lineHeight:1.6}}>
+              מבנק הפועלים, לאומי, דיסקונט, Max ועוד.<br/>Excel (xlsx/xls) או CSV
+            </p>
+            <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,.CSV"
+                   style={{display:'none'}} onChange={e=>e.target.files[0]&&handleFile(e.target.files[0])}/>
+            <button className="btn-primary" onClick={()=>fileRef.current.click()}>📂 בחר קובץ</button>
+            <div onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#22C55E';}}
+                 onDragLeave={e=>{e.currentTarget.style.borderColor='#e5e7eb';}}
+                 onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#e5e7eb';
+                             e.dataTransfer.files[0]&&handleFile(e.dataTransfer.files[0]);}}
+                 style={{border:'2px dashed #e5e7eb',borderRadius:14,padding:24,marginTop:16,
+                         color:'#9CA3AF',fontSize:13,transition:'border-color .2s'}}>
+              או גרור קובץ לכאן
+            </div>
+            {err&&<p style={{color:'#dc2626',fontSize:13,marginTop:12}}>{err}</p>}
+          </div>
+          <div className="card" style={{padding:16}}>
+            <p style={{fontSize:13,fontWeight:700,marginBottom:8}}>📋 איך להוריד קובץ מהבנק?</p>
+            {[
+              {bank:'בנק הפועלים',steps:'תנועות בחשבון → ייצוא → Excel'},
+              {bank:'בנק לאומי',  steps:'תנועות → ייצוא → Excel'},
+              {bank:'Max',        steps:'עסקאות → הורד דוח → Excel'},
+            ].map(b=>(
+              <div key={b.bank} style={{borderBottom:'1px solid #f3f4f6',padding:'8px 0',fontSize:12}}>
+                <span style={{fontWeight:600,color:'#374151'}}>{b.bank}: </span>
+                <span style={{color:'#6B7280'}}>{b.steps}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {stage==='map'&&(
+        <div>
+          <p style={{fontSize:17,fontWeight:700,margin:'0 0 4px'}}>🗂️ מיפוי עמודות</p>
+          <p style={{fontSize:13,color:'#6B7280',marginBottom:16}}>בחר איזו עמודה מכילה כל נתון:</p>
+          <div className="card" style={{overflowX:'auto',marginBottom:16}}>
+            <table style={{fontSize:11,borderCollapse:'collapse',width:'100%'}}>
+              <thead><tr style={{background:'#f9fafb'}}>
+                {hdrRow.map((h,i)=><th key={i} style={{padding:'6px 8px',borderBottom:'1px solid #e5e7eb',textAlign:'right',whiteSpace:'nowrap',fontWeight:700,color:'#374151'}}>{String(h)}</th>)}
+              </tr></thead>
+              <tbody>{rows.slice(1,4).map((r,i)=>(
+                <tr key={i} style={{borderBottom:'1px solid #f3f4f6'}}>
+                  {r.map((c,j)=><td key={j} style={{padding:'6px 8px',color:'#6B7280',whiteSpace:'nowrap'}}>{String(c).slice(0,20)}</td>)}
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+          <div className="card" style={{padding:16,display:'flex',flexDirection:'column',gap:14}}>
+            {[
+              {key:'date',  label:'📅 תאריך'},
+              {key:'desc',  label:'📝 תיאור עסקה'},
+              {key:'amount',label:'💰 סכום (עמודה אחת)'},
+              {key:'debit', label:'📤 חיוב / הוצאה'},
+              {key:'credit',label:'📥 זכות / הכנסה'},
+            ].map(f=>(
+              <div key={f.key} style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <label style={{fontSize:13,fontWeight:600,color:'#374151'}}>{f.label}</label>
+                <select value={cols[f.key]} onChange={e=>setCols(c=>({...c,[f.key]:parseInt(e.target.value)}))}
+                        style={{border:'1px solid #e5e7eb',borderRadius:8,padding:'6px 10px',fontSize:13,background:'white',minWidth:130}}>
+                  <option value={-1}>— לא רלוונטי</option>
+                  {hdrRow.map((h,i)=><option key={i} value={i}>{String(h)||`עמודה ${i+1}`}</option>)}
+                </select>
+              </div>
+            ))}
+          </div>
+          <div style={{display:'flex',gap:12,marginTop:16}}>
+            <button className="btn-secondary" onClick={()=>setStage('upload')} style={{width:'auto',padding:'14px 20px'}}>← חזור</button>
+            <button className="btn-primary" onClick={buildPreview}
+                    disabled={cols.desc<0||(cols.amount<0&&cols.debit<0&&cols.credit<0)||cols.date<0}>
+              תצוגה מקדימה →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {stage==='preview'&&(
+        <div>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+            <div>
+              <p style={{fontSize:17,fontWeight:700,margin:0}}>✅ תצוגה מקדימה</p>
+              <p style={{fontSize:13,color:'#6B7280',margin:'2px 0 0'}}>{preview.length} עסקאות זוהו</p>
+            </div>
+            <button className="btn-secondary" onClick={()=>setStage('map')} style={{width:'auto',padding:'8px 14px',fontSize:13}}>← חזור</button>
+          </div>
+          <div className="card" style={{overflow:'hidden',marginBottom:16}}>
+            {preview.slice(0,20).map(tx=><TxRow key={tx.id} tx={tx}/>)}
+            {preview.length>20&&<p style={{textAlign:'center',fontSize:12,color:'#9CA3AF',padding:12}}>ועוד {preview.length-20} עסקאות...</p>}
+          </div>
+          <button className="btn-primary" onClick={()=>{onImport(preview);setStage('done');}}>
+            ייבא {preview.length} עסקאות ←
+          </button>
+        </div>
+      )}
+
+      {stage==='done'&&(
+        <div className="card" style={{padding:40,textAlign:'center'}}>
+          <div style={{fontSize:60,marginBottom:16}}>🎉</div>
+          <p style={{fontSize:20,fontWeight:800,marginBottom:8}}>הייבוא הושלם!</p>
+          <p style={{fontSize:14,color:'#6B7280',marginBottom:24}}>{preview.length} עסקאות יובאו בהצלחה</p>
+          <button className="btn-primary" onClick={()=>setStage('upload')}>ייבא קובץ נוסף</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── IMPORT TAB (router only — no hooks after conditional returns) ── */
 function ImportTab({onImport, onUpdateInv}) {
-  const [method,setMethod]=useState('choose'); // choose | excel | screenshot | connect
+  const [method,setMethod]=useState('choose');
   if(method==='screenshot') return (
     <div style={{padding:16}}>
       <button onClick={()=>setMethod('choose')} style={{border:'none',background:'none',color:'#22C55E',
@@ -1401,6 +1610,7 @@ function ImportTab({onImport, onUpdateInv}) {
       <ScreenshotImport onImport={txs=>{onImport(txs);}} onUpdateInvestment={onUpdateInv}/>
     </div>
   );
+  if(method==='excel') return <ExcelImport onImport={onImport} onBack={()=>setMethod('choose')}/>;
   if(method==='connect') return (
     <div style={{padding:16,display:'flex',flexDirection:'column',gap:14}}>
       <button onClick={()=>setMethod('choose')} style={{border:'none',background:'none',color:'#22C55E',
@@ -1452,226 +1662,6 @@ function ImportTab({onImport, onUpdateInv}) {
           <span style={{marginRight:'auto',color:o.border,fontSize:20}}>›</span>
         </button>
       ))}
-    </div>
-  );
-  // ── Excel flow below (method==='excel') ──
-  const [stage,setStage]=useState('upload'); // upload | map | preview | done
-  const [rows,setRows]=useState([]);
-  const [cols,setCols]=useState({date:-1,desc:-1,debit:-1,credit:-1,amount:-1});
-  const [preview,setPreview]=useState([]);
-  const [importing,setImporting]=useState(false);
-  const [err,setErr]=useState(null);
-  const fileRef=useRef();
-
-  async function handleFile(file) {
-    setErr(null);
-    // Load XLSX dynamically if not yet available (CDN fallback)
-    if (typeof XLSX === 'undefined') {
-      setErr('⏳ טוען ספריית Excel... נסה שוב בעוד שנייה');
-      try {
-        await new Promise((res,rej)=>{
-          const s=document.createElement('script');
-          s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
-          s.onload=res; s.onerror=rej;
-          document.head.appendChild(s);
-        });
-        setErr(null);
-      } catch { setErr('לא ניתן לטעון ספריית Excel — בדוק חיבור אינטרנט'); return; }
-    }
-    try {
-      let wb;
-      if(file.name.toLowerCase().endsWith('.csv')||file.type==='text/csv'||file.type==='text/plain') {
-        // CSV: read as text for better Hebrew support
-        const text=await file.text();
-        wb=XLSX.read(text,{type:'string',raw:false});
-      } else {
-        const buf=await file.arrayBuffer();
-        wb=XLSX.read(buf,{type:'array',cellDates:true});
-      }
-      if(!wb.SheetNames.length) throw new Error('הקובץ לא מכיל גיליונות');
-      const ws=wb.Sheets[wb.SheetNames[0]];
-      const data=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
-      const clean=data.filter(r=>r.some(c=>String(c).trim()!==''));
-      if(!clean.length) throw new Error('הקובץ ריק');
-      setRows(clean);
-      const hdr=clean[0].map(c=>String(c).toLowerCase().trim());
-      const find=(...terms)=>hdr.findIndex(h=>terms.some(t=>h.includes(t)));
-      setCols({
-        date:   find('תאריך','date'),
-        desc:   find('תיאור','פירוט','שם','description','אסמכתא'),
-        debit:  find('חיוב','הוצאה','debit'),
-        credit: find('זכות','הכנסה','credit'),
-        amount: find('סכום','amount'),
-      });
-      setStage('map');
-    } catch(e) { setErr('שגיאה בקריאת הקובץ: '+e.message); }
-  }
-
-  function buildPreview() {
-    const parsed=[];
-    for(let i=1;i<rows.length;i++){
-      const row=rows[i];
-      let amount=0;
-      if(cols.amount>=0) {
-        amount=parseFloat(String(row[cols.amount]).replace(/[^\d.-]/g,''))||0;
-      } else {
-        const cr=parseFloat(String(row[cols.credit]||'').replace(/[^\d.-]/g,''))||0;
-        const db=parseFloat(String(row[cols.debit]||'').replace(/[^\d.-]/g,''))||0;
-        amount=cr>0?cr:(db>0?-db:0);
-      }
-      const rawDate=row[cols.date];
-      let date;
-      if(rawDate instanceof Date) date=rawDate.toISOString().split('T')[0];
-      else {
-        const d=new Date(rawDate);
-        date=isNaN(d)?new Date().toISOString().split('T')[0]:d.toISOString().split('T')[0];
-      }
-      const desc=String(row[cols.desc]||'').trim();
-      if(!desc||amount===0) continue;
-      const cat=categorize(desc);
-      parsed.push({id:Date.now()+i,description:desc,amount:Math.round(amount*100)/100,
-                   date,cat:cat.cat,color:cat.color,emoji:cat.emoji,account:'ייבוא'});
-    }
-    setPreview(parsed);
-    setStage('preview');
-  }
-
-  function confirmImport(){
-    onImport(preview);
-    setStage('done');
-  }
-
-  const hdrRow=rows[0]||[];
-
-  return (
-    <div style={{padding:16,display:'flex',flexDirection:'column',gap:16}}>
-      <button onClick={()=>setMethod('choose')} style={{border:'none',background:'none',color:'#22C55E',
-        fontSize:14,fontWeight:700,cursor:'pointer',padding:0,marginBottom:-8}}>← חזור לבחירת שיטה</button>
-
-      {stage==='upload'&&(
-        <div>
-          <div className="card" style={{padding:32,textAlign:'center'}}>
-            <div style={{fontSize:48,marginBottom:12}}>📥</div>
-            <p style={{fontSize:18,fontWeight:700,marginBottom:8}}>ייבא קובץ עסקאות</p>
-            <p style={{fontSize:13,color:'#6B7280',marginBottom:24,lineHeight:1.6}}>
-              מבנק הפועלים, לאומי, דיסקונט, Max ועוד.<br/>
-              Excel (xlsx/xls) או CSV
-            </p>
-            <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,.CSV"
-                   style={{display:'none'}} onChange={e=>e.target.files[0]&&handleFile(e.target.files[0])}/>
-            <button className="btn-primary" onClick={()=>fileRef.current.click()}>
-              📂 בחר קובץ
-            </button>
-            {/* Drag area */}
-            <div onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#22C55E';}}
-                 onDragLeave={e=>{e.currentTarget.style.borderColor='#e5e7eb';}}
-                 onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#e5e7eb';
-                             e.dataTransfer.files[0]&&handleFile(e.dataTransfer.files[0]);}}
-                 style={{border:'2px dashed #e5e7eb',borderRadius:14,padding:24,marginTop:16,
-                         color:'#9CA3AF',fontSize:13,transition:'border-color .2s'}}>
-              או גרור קובץ לכאן
-            </div>
-          </div>
-          {err&&<p style={{color:'#dc2626',fontSize:13,textAlign:'center'}}>{err}</p>}
-
-          <div className="card" style={{padding:16}}>
-            <p style={{fontSize:13,fontWeight:700,marginBottom:8}}>📋 איך להוריד קובץ מהבנק?</p>
-            {[
-              {bank:'בנק הפועלים',steps:'כניסה ← תנועות בחשבון ← ייצוא ← Excel'},
-              {bank:'בנק לאומי',steps:'לאומי Online ← תנועות ← ייצוא ← Excel'},
-              {bank:'Max',steps:'max.co.il ← עסקאות ← הורד דוח ← Excel'},
-            ].map(b=>(
-              <div key={b.bank} style={{borderBottom:'1px solid #f3f4f6',padding:'8px 0',fontSize:12}}>
-                <span style={{fontWeight:600,color:'#374151'}}>{b.bank}: </span>
-                <span style={{color:'#6B7280'}}>{b.steps}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {stage==='map'&&(
-        <div>
-          <p style={{fontSize:17,fontWeight:700,margin:'0 0 4px'}}>🗂️ מיפוי עמודות</p>
-          <p style={{fontSize:13,color:'#6B7280',marginBottom:16}}>בחר איזו עמודה מכילה כל נתון:</p>
-
-          {/* Preview of first 3 rows */}
-          <div className="card" style={{overflowX:'auto',marginBottom:16}}>
-            <table style={{fontSize:11,borderCollapse:'collapse',width:'100%'}}>
-              <thead>
-                <tr style={{background:'#f9fafb'}}>
-                  {hdrRow.map((h,i)=><th key={i} style={{padding:'6px 8px',borderBottom:'1px solid #e5e7eb',textAlign:'right',whiteSpace:'nowrap',fontWeight:700,color:'#374151'}}>{String(h)}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.slice(1,4).map((r,i)=>(
-                  <tr key={i} style={{borderBottom:'1px solid #f3f4f6'}}>
-                    {r.map((c,j)=><td key={j} style={{padding:'6px 8px',color:'#6B7280',whiteSpace:'nowrap'}}>{String(c).slice(0,20)}</td>)}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Column selectors */}
-          <div className="card" style={{padding:16,display:'flex',flexDirection:'column',gap:14}}>
-            {[
-              {key:'date',label:'📅 תאריך'},
-              {key:'desc',label:'📝 תיאור עסקה'},
-              {key:'amount',label:'💰 סכום (עמודה אחת)'},
-              {key:'debit',label:'📤 חיוב / הוצאה'},
-              {key:'credit',label:'📥 זכות / הכנסה'},
-            ].map(f=>(
-              <div key={f.key} style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                <label style={{fontSize:13,fontWeight:600,color:'#374151'}}>{f.label}</label>
-                <select value={cols[f.key]} onChange={e=>setCols(c=>({...c,[f.key]:parseInt(e.target.value)}))}
-                        style={{border:'1px solid #e5e7eb',borderRadius:8,padding:'6px 10px',fontSize:13,background:'white',minWidth:130}}>
-                  <option value={-1}>— לא רלוונטי</option>
-                  {hdrRow.map((h,i)=><option key={i} value={i}>{String(h)||`עמודה ${i+1}`}</option>)}
-                </select>
-              </div>
-            ))}
-          </div>
-
-          <div style={{display:'flex',gap:12,marginTop:16}}>
-            <button className="btn-secondary" onClick={()=>setStage('upload')} style={{width:'auto',padding:'14px 20px'}}>← חזור</button>
-            <button className="btn-primary" onClick={buildPreview}
-                    disabled={cols.desc<0||(cols.amount<0&&(cols.debit<0&&cols.credit<0))||cols.date<0}>
-              תצוגה מקדימה →
-            </button>
-          </div>
-        </div>
-      )}
-
-      {stage==='preview'&&(
-        <div>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-            <div>
-              <p style={{fontSize:17,fontWeight:700,margin:0}}>✅ תצוגה מקדימה</p>
-              <p style={{fontSize:13,color:'#6B7280',margin:'2px 0 0'}}>{preview.length} עסקאות זוהו</p>
-            </div>
-            <button className="btn-secondary" onClick={()=>setStage('map')} style={{width:'auto',padding:'8px 14px',fontSize:13}}>← חזור</button>
-          </div>
-
-          <div className="card" style={{overflow:'hidden',marginBottom:16}}>
-            {preview.slice(0,20).map(tx=><TxRow key={tx.id} tx={tx}/>)}
-            {preview.length>20&&<p style={{textAlign:'center',fontSize:12,color:'#9CA3AF',padding:12}}>ועוד {preview.length-20} עסקאות...</p>}
-          </div>
-
-          <button className="btn-primary" onClick={confirmImport}>
-            ייבא {preview.length} עסקאות ←
-          </button>
-        </div>
-      )}
-
-      {stage==='done'&&(
-        <div className="card" style={{padding:40,textAlign:'center'}}>
-          <div style={{fontSize:60,marginBottom:16}}>🎉</div>
-          <p style={{fontSize:20,fontWeight:800,marginBottom:8}}>הייבוא הושלם!</p>
-          <p style={{fontSize:14,color:'#6B7280',marginBottom:24}}>{preview.length} עסקאות יובאו בהצלחה</p>
-          <button className="btn-primary" onClick={()=>setStage('upload')}>ייבא קובץ נוסף</button>
-        </div>
-      )}
     </div>
   );
 }
