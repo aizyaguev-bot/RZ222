@@ -25,9 +25,9 @@
     .slide-up{animation:slideUp .3s ease}
     .fade-in{animation:fadeIn .25s ease}
     .spin{animation:spin .8s linear infinite;display:inline-block}
-    .card{background:#fff;border-radius:20px;border:1px solid #e5e7eb;}
+    .card{background:#fff;border-radius:20px;border:1px solid #e5e7eb;box-shadow:0 1px 3px rgba(0,0,0,.08);}
     .btn-primary{background:#22C55E;color:#fff;border:none;border-radius:14px;padding:14px 24px;
-                 font-size:16px;font-weight:700;cursor:pointer;width:100%;transition:background .15s;}
+                 font-size:16px;font-weight:700;cursor:pointer;width:100%;transition:background .15s;letter-spacing:0.3px;}
     .btn-primary:active{background:#16a34a;}
     .btn-secondary{background:#f3f4f6;color:#374151;border:none;border-radius:14px;padding:14px 24px;
                    font-size:15px;font-weight:600;cursor:pointer;transition:background .15s;}
@@ -41,7 +41,7 @@
     .scrollbar-hide::-webkit-scrollbar{display:none}
     .scrollbar-hide{-ms-overflow-style:none;scrollbar-width:none}
     /* bottom nav safe area */
-    .main-content{padding-bottom:calc(72px + env(safe-area-inset-bottom));}
+    .main-content{padding-bottom:calc(80px + env(safe-area-inset-bottom));}
     .bottom-nav{padding-bottom:env(safe-area-inset-bottom);}
   </style>
 </head>
@@ -649,9 +649,9 @@ function Dashboard({profile,txs,onAdd,budgetPlan,daysToCredit,daysToSalary}) {
     <div>
       {/* Hero */}
       <div style={{background:`linear-gradient(135deg,${spendColor},${spendColor}cc)`,
-                   padding:'28px 20px 32px',color:'white'}}>
+                   padding:'20px 20px 24px',color:'white'}}>
         <p style={{opacity:.8,fontSize:13,margin:'0 0 4px'}}>שלום {profile.name} 👋 · בטוח להוציא היום</p>
-        <p style={{fontSize:46,fontWeight:800,margin:'0 0 12px',lineHeight:1}}>{fmtILS(safeToSpend)}</p>
+        <p style={{fontSize:42,fontWeight:800,margin:'0 0 8px',lineHeight:1}}>{fmtILS(safeToSpend)}</p>
         <div style={{display:'flex',gap:20,fontSize:13,opacity:.85}}>
           <span>📥 הכנסה: {fmtILS(monthIncome||net)}</span>
           <span>📤 הוצאות: {fmtILS(monthSpent)}</span>
@@ -1073,55 +1073,82 @@ function ScreenshotImport({onImport, onUpdateInvestment}) {
   const [keyTesting, setKeyTesting] = useState(false);
   const [keyStatus,  setKeyStatus]  = useState(null); // null | 'ok' | 'error'
   const [keyErrMsg,  setKeyErrMsg]  = useState('');
-  // Ref to hold the key being tested so the save-effect always reads the right value
-  // even if keyInput state changes during the async test.
-  const pendingKeyRef = useRef('');
 
-  async function testKey(key) {
+  async function testAndSaveKey() {
+    const key = keyInput.trim();
+    if (!key) return;
     setKeyTesting(true); setKeyStatus(null); setKeyErrMsg('');
     try {
-      // Lightweight text-only call — no image needed
       const models = ['gemini-1.5-flash','gemini-2.0-flash','gemini-1.5-flash-latest'];
       let ok = false;
       for (const model of models) {
-        const url=`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
-        const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({contents:[{parts:[{text:'Reply with the single word OK.'}]}],
-                               generationConfig:{maxOutputTokens:5}})});
-        if(r.ok){ ok=true; break; }
-        if(r.status===404) continue; // try next model
-        const e=await r.json().catch(()=>({}));
-        const msg=e?.error?.message||'';
-        if(r.status===400||r.status===401||r.status===403){
-          setKeyErrMsg(r.status===400?`מפתח לא תקין — ודא שהעתקת מ-aistudio.google.com (${r.status})`
-                      :`שגיאת הרשאה — המפתח שגוי או לא מוגדר (${r.status}: ${msg})`);
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+        const r = await fetch(url, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({
+            contents:[{parts:[{text:'Reply with the single word OK.'}]}],
+            generationConfig:{maxOutputTokens:5}
+          })
+        });
+        if (r.ok) { ok = true; break; }
+        if (r.status === 404) continue;
+        const e = await r.json().catch(()=>({}));
+        const raw = e?.error?.message || '';
+        if (r.status === 400 || r.status === 401 || r.status === 403) {
+          setKeyErrMsg(`מפתח לא תקין (${r.status}) — ודא שהמפתח הוא מ-aistudio.google.com`);
           setKeyStatus('error'); setKeyTesting(false); return;
         }
-        setKeyErrMsg(`שגיאה ${r.status}: ${msg}`); setKeyStatus('error'); setKeyTesting(false); return;
+        setKeyErrMsg(`שגיאה ${r.status}: ${raw}`); setKeyStatus('error'); setKeyTesting(false); return;
       }
-      if(ok){ setKeyStatus('ok'); }
-      else { setKeyErrMsg('המודלים לא זמינים — נסה שוב'); setKeyStatus('error'); }
+      if (ok) {
+        // Save immediately — no useEffect needed
+        lsSet(LS.GEMINI, key);
+        setApiKey(key);
+        setKeyInput('');
+        setShowKey(false);
+        setKeyStatus('ok');
+        setKeyErrMsg('');
+      } else {
+        setKeyErrMsg('המודלים לא זמינים — נסה שוב');
+        setKeyStatus('error');
+      }
     } catch(e) {
-      setKeyErrMsg('שגיאת רשת: '+e.message); setKeyStatus('error');
+      setKeyErrMsg('שגיאת רשת: ' + e.message);
+      setKeyStatus('error');
     }
     setKeyTesting(false);
   }
 
-  async function saveKey(k) {
-    const key=k||keyInput.trim(); if(!key) return;
-    // Store the key in a ref so the effect below always reads the correct value
-    // regardless of any React re-renders that may flush between now and then.
-    pendingKeyRef.current=key;
-    await testKey(key);
-  }
-  // Save after a successful test — reads from ref, not from potentially-stale closure
-  useEffect(()=>{
-    if(keyStatus==='ok'&&pendingKeyRef.current){
-      const key=pendingKeyRef.current;
-      pendingKeyRef.current='';
-      lsSet(LS.GEMINI,key); setApiKey(key); setKeyInput(''); setShowKey(false);
+  async function testExistingKey() {
+    if (!apiKey) return;
+    setKeyTesting(true); setKeyStatus(null); setKeyErrMsg('');
+    try {
+      const models = ['gemini-1.5-flash','gemini-2.0-flash','gemini-1.5-flash-latest'];
+      let ok = false;
+      for (const model of models) {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+        const r = await fetch(url, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({
+            contents:[{parts:[{text:'Reply with the single word OK.'}]}],
+            generationConfig:{maxOutputTokens:5}
+          })
+        });
+        if (r.ok) { ok = true; break; }
+        if (r.status === 404) continue;
+        const e = await r.json().catch(()=>({}));
+        const raw = e?.error?.message || '';
+        setKeyErrMsg(`שגיאה ${r.status}: ${raw}`); setKeyStatus('error'); setKeyTesting(false); return;
+      }
+      if (ok) { setKeyStatus('ok'); }
+      else { setKeyErrMsg('המודלים לא זמינים'); setKeyStatus('error'); }
+    } catch(e) {
+      setKeyErrMsg('שגיאת רשת: ' + e.message); setKeyStatus('error');
     }
-  },[keyStatus]);
+    setKeyTesting(false);
+  }
 
   function reset() { setStage('type');setDocType(null);setImgUrl(null);setImgFile(null);setResult(null);setErr(null);setProg('');
     setRows([{id:1,description:'',amount:'',date:new Date().toISOString().split('T')[0]}]); }
@@ -1187,8 +1214,9 @@ function ScreenshotImport({onImport, onUpdateInvestment}) {
     <div>
       {/* API key setup banner */}
       {!apiKey&&stage!=='done'&&(
-        <div style={{background:'linear-gradient(135deg,#1e3a5f,#0f172a)',borderRadius:16,
-                     padding:18,marginBottom:14,color:'white'}}>
+        <div style={{background:'linear-gradient(135deg,#1e3a5f,#0f172a)',borderRadius:0,
+                     margin:'0 -16px 14px',padding:'22px 16px',color:'white',
+                     boxShadow:'0 4px 20px rgba(15,23,42,.3)'}}>
           <p style={{margin:'0 0 4px',fontWeight:700,fontSize:15}}>🤖 Gemini AI Vision — חינמי</p>
           <p style={{margin:'0 0 4px',fontSize:12,opacity:.75,lineHeight:1.5}}>
             קבל מפתח חינמי מ-<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener"
@@ -1202,12 +1230,12 @@ function ScreenshotImport({onImport, onUpdateInvestment}) {
             <div>
               <div style={{display:'flex',gap:8,marginBottom:8}}>
                 <input value={keyInput} onChange={e=>{setKeyInput(e.target.value);setKeyStatus(null);setKeyErrMsg('');}}
-                       onKeyDown={e=>e.key==='Enter'&&keyInput.trim()&&saveKey()}
+                       onKeyDown={e=>e.key==='Enter'&&keyInput.trim()&&testAndSaveKey()}
                        placeholder="AIzaSy..." autoFocus
                        style={{flex:1,background:'rgba(255,255,255,.15)',border:`1px solid ${keyStatus==='error'?'#f87171':keyStatus==='ok'?'#4ade80':'rgba(255,255,255,.3)'}`,
                                borderRadius:10,padding:'10px 12px',color:'white',fontSize:13,
                                direction:'ltr',fontFamily:'monospace',outline:'none'}}/>
-                <button onClick={()=>keyInput.trim()&&saveKey()}
+                <button onClick={()=>testAndSaveKey()}
                         disabled={!keyInput.trim()||keyTesting}
                         style={{background:keyTesting?'#6B7280':'#22C55E',border:'none',borderRadius:10,padding:'10px 18px',
                                 color:'white',fontWeight:800,cursor:keyTesting?'default':'pointer',minWidth:80}}>
@@ -1239,7 +1267,7 @@ function ScreenshotImport({onImport, onUpdateInvestment}) {
              :'✅ Gemini AI מוגדר'}
           </span>
           <div style={{display:'flex',gap:8}}>
-            <button onClick={()=>testKey(apiKey)} disabled={keyTesting}
+            <button onClick={()=>testExistingKey()} disabled={keyTesting}
                     style={{border:'none',background:'#e0f2fe',color:'#0369a1',borderRadius:7,
                             padding:'4px 10px',fontSize:11,cursor:'pointer',fontWeight:600}}>
               בדוק
@@ -1417,6 +1445,43 @@ function ScreenshotImport({onImport, onUpdateInvestment}) {
   );
 }
 
+/* ── CSV/EXCEL HELPERS ── */
+// Read file as text, trying UTF-8 then Windows-1255 for Hebrew CSVs
+async function readFileAsText(file) {
+  try {
+    const text = await file.text(); // UTF-8
+    // Detect garbled Hebrew (Windows-1255 read as UTF-8 produces replacement chars or C1 controls)
+    if (text.includes('�') || (/[\x00-\x08\x0E-\x1F]/.test(text) && text.length > 100)) {
+      const buf = await file.arrayBuffer();
+      const decoder = new TextDecoder('windows-1255');
+      return decoder.decode(buf);
+    }
+    return text;
+  } catch {
+    const buf = await file.arrayBuffer();
+    return new TextDecoder('utf-8').decode(buf);
+  }
+}
+
+// Simple CSV parser with comma/semicolon/tab auto-detection
+function parseCSV(text) {
+  const lines = text.split(/\r?\n/);
+  const sep = lines[0].includes('\t') ? '\t' : lines[0].includes(';') ? ';' : ',';
+  return lines
+    .map(line => {
+      const cells = [];
+      let cur = '', inQ = false;
+      for (const ch of line) {
+        if (ch === '"') { inQ = !inQ; }
+        else if (ch === sep && !inQ) { cells.push(cur.trim()); cur = ''; }
+        else { cur += ch; }
+      }
+      cells.push(cur.trim());
+      return cells;
+    })
+    .filter(r => r.some(c => c !== ''));
+}
+
 /* ── EXCEL IMPORT (own component — hooks must not follow conditional returns) ── */
 function ExcelImport({onImport, onBack}) {
   const [stage,setStage]=useState('upload');
@@ -1428,49 +1493,53 @@ function ExcelImport({onImport, onBack}) {
 
   async function handleFile(file) {
     setErr(null);
-    if (typeof XLSX === 'undefined') {
-      setErr('⏳ טוען ספריית Excel... נסה שוב בעוד שנייה');
-      try {
-        await new Promise((res,rej)=>{
-          const s=document.createElement('script');
-          s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
-          s.onload=res; s.onerror=rej;
-          document.head.appendChild(s);
-        });
-        setErr(null);
-      } catch { setErr('לא ניתן לטעון ספריית Excel — בדוק חיבור אינטרנט'); return; }
-    }
+    const name = file.name.toLowerCase();
+    const isCSV = name.endsWith('.csv') || file.type === 'text/csv' || file.type === 'text/plain';
+
+    setErr('⏳ קורא קובץ...');
+
     try {
-      let wb;
-      if(file.name.toLowerCase().endsWith('.csv')||file.type==='text/csv'||file.type==='text/plain'){
-        const text=await file.text();
-        wb=XLSX.read(text,{type:'string',raw:false});
+      let data; // array of arrays
+
+      if (typeof XLSX !== 'undefined') {
+        // XLSX is available — use it for both Excel and CSV
+        let wb;
+        if (isCSV) {
+          const text = await readFileAsText(file);
+          wb = XLSX.read(text, { type: 'string', raw: false });
+        } else {
+          const buf = await file.arrayBuffer();
+          wb = XLSX.read(buf, { type: 'array', cellDates: true });
+        }
+        if (!wb.SheetNames.length) throw new Error('הקובץ לא מכיל גיליונות');
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+      } else if (isCSV) {
+        // Fallback: built-in CSV parser (no XLSX lib needed)
+        const text = await readFileAsText(file);
+        data = parseCSV(text);
       } else {
-        const buf=await file.arrayBuffer();
-        wb=XLSX.read(buf,{type:'array',cellDates:true});
+        throw new Error('ספריית Excel לא נטענה. רענן את הדף ונסה שוב.');
       }
-      if(!wb.SheetNames.length) throw new Error('הקובץ לא מכיל גיליונות');
-      const ws=wb.Sheets[wb.SheetNames[0]];
-      const data=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
-      const clean=data.filter(r=>r.some(c=>String(c).trim()!==''));
-      if(!clean.length) throw new Error('הקובץ ריק');
+
+      const clean = data.filter(r => r.some(c => String(c).trim() !== ''));
+      if (!clean.length) throw new Error('הקובץ ריק');
+
       setRows(clean);
-      const hdr=clean[0].map(c=>String(c).toLowerCase().trim().replace(/\s+/g,' '));
-      const find=(...terms)=>hdr.findIndex(h=>terms.some(t=>h.includes(t)));
+      const hdr = clean[0].map(c => String(c).toLowerCase().trim().replace(/\s+/g, ' '));
+      const find = (...terms) => hdr.findIndex(h => terms.some(t => h.includes(t)));
       setCols({
-        // Date: try specific then general
-        date:  find('תאריך ביצוע','תאריך עסקה','תאריך פעולה','תאריך','date','transaction date'),
-        // Description: merchant/memo
-        desc:  find('שם בית עסק','שם בעסק','שם מקור','פירוט','תיאור','אסמכתא','description','merchant','details'),
-        // Debit (expense): Israeli banks use חיוב or חובה
-        debit: find('חיוב בש"ח','סכום חיוב','חיוב','חובה','הוצאה','debit','withdrawal','minus'),
-        // Credit (income): זכות or זכאות
-        credit:find('זכות בש"ח','סכום זכות','זכות','זכאות','הכנסה','credit','deposit','plus'),
-        // Single amount column (Max, some bank formats)
-        amount:find('סכום עסקה','סכום בש"ח','סכום','amount','transaction amount'),
+        date:   find('תאריך ביצוע','תאריך עסקה','תאריך פעולה','תאריך','date','transaction date'),
+        desc:   find('שם בית עסק','שם בעסק','שם מקור','פירוט','תיאור','אסמכתא','description','merchant','details'),
+        debit:  find('חיוב בש"ח','סכום חיוב','חיוב','חובה','הוצאה','debit','withdrawal','minus'),
+        credit: find('זכות בש"ח','סכום זכות','זכות','זכאות','הכנסה','credit','deposit','plus'),
+        amount: find('סכום עסקה','סכום בש"ח','סכום','amount','transaction amount'),
       });
+      setErr(null);
       setStage('map');
-    } catch(e) { setErr('שגיאה בקריאת הקובץ: '+e.message); }
+    } catch(e) {
+      setErr('שגיאה: ' + e.message);
+    }
   }
 
   // Parse a cell value as a number, handling various Israeli bank formats
@@ -1690,6 +1759,7 @@ function ImportTab({onImport, onUpdateInv}) {
         {emoji:'📊',title:'קובץ Excel / CSV',sub:'הפועלים, לאומי, דיסקונט, Max ועוד',action:()=>setMethod('excel'),color:'#eff6ff',border:'#bfdbfe',tc:'#1e40af'},
       ].map(o=>(
         <button key={o.title} onClick={o.action} style={{background:o.color,border:`1px solid ${o.border}`,
+          borderLeft:`4px solid ${o.border}`,
           borderRadius:16,padding:'16px',display:'flex',alignItems:'center',gap:14,cursor:'pointer',textAlign:'right'}}>
           <span style={{fontSize:34,flexShrink:0}}>{o.emoji}</span>
           <div>
@@ -3009,13 +3079,15 @@ function BottomNav({tab,setTab}) {
     <nav className="bottom-nav" style={{
       position:'fixed',bottom:0,left:0,right:0,background:'white',
       borderTop:'1px solid #e5e7eb',display:'flex',zIndex:50,
-      boxShadow:'0 -2px 16px rgba(0,0,0,.06)'}}>
+      boxShadow:'0 -2px 16px rgba(0,0,0,.06)',height:64}}>
       {tabs.map(t=>(
         <button key={t.id} onClick={()=>setTab(t.id)} style={{
-          flex:1,padding:'10px 2px 8px',border:'none',background:'none',cursor:'pointer',
-          display:'flex',flexDirection:'column',alignItems:'center',gap:2,
+          flex:1,border:'none',background:'none',cursor:'pointer',
+          display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:2,
           color:tab===t.id?'#22C55E':'#9CA3AF',transition:'color .15s'}}>
-          <span style={{fontSize:22,lineHeight:1}}>{t.emoji}</span>
+          <span style={{fontSize:21,lineHeight:1,padding:'3px 10px',
+            background:tab===t.id?'#dcfce7':'transparent',
+            borderRadius:10,transition:'background .15s'}}>{t.emoji}</span>
           <span style={{fontSize:10,fontWeight:tab===t.id?700:500}}>{t.label}</span>
         </button>
       ))}
@@ -3104,14 +3176,14 @@ function App() {
       )}
 
       {/* Page title bar */}
-      <div style={{background:'white',borderBottom:'1px solid #e5e7eb',padding:'14px 20px',
+      <div style={{background:'#0f172a',borderBottom:'1px solid #1e293b',padding:'14px 20px',
                    position:'sticky',top:0,zIndex:30}}>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
           <div style={{display:'flex',alignItems:'center',gap:10}}>
             <span style={{fontSize:22}}>💎</span>
             <div>
-              <p style={{margin:0,fontSize:15,fontWeight:800,lineHeight:1}}>FinanceIL</p>
-              <p style={{margin:0,fontSize:11,color:'#9CA3AF'}}>
+              <p style={{margin:0,fontSize:15,fontWeight:800,lineHeight:1,color:'white'}}>FinanceIL</p>
+              <p style={{margin:0,fontSize:11,color:'rgba(255,255,255,.45)'}}>
                 {new Intl.DateTimeFormat('he-IL',{month:'long',year:'numeric'}).format(new Date())}
               </p>
             </div>
@@ -3119,12 +3191,12 @@ function App() {
           {/* Upcoming pills */}
           <div style={{display:'flex',gap:6}}>
             {daysToSalary<=7&&(
-              <div style={{background:'#f0fdf4',borderRadius:8,padding:'4px 8px',fontSize:11,fontWeight:700,color:'#15803d'}}>
+              <div style={{background:'rgba(34,197,94,.2)',borderRadius:8,padding:'4px 8px',fontSize:11,fontWeight:700,color:'#4ade80'}}>
                 💰 משכורת בעוד {daysToSalary}י׳
               </div>
             )}
             {daysToCredit<=5&&(
-              <div style={{background:'#fef2f2',borderRadius:8,padding:'4px 8px',fontSize:11,fontWeight:700,color:'#b91c1c'}}>
+              <div style={{background:'rgba(239,68,68,.2)',borderRadius:8,padding:'4px 8px',fontSize:11,fontWeight:700,color:'#f87171'}}>
                 💳 אשראי בעוד {daysToCredit}י׳
               </div>
             )}
