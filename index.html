@@ -1025,6 +1025,7 @@ function ScreenshotImport({onImport, onUpdateInvestment}) {
   const [result,   setResult]   = useState(null); // parsed OCR result
   const [err,      setErr]      = useState(null);
   const [prog,     setProg]     = useState('');
+  const fileRef = useRef();
   // manual transaction rows (fallback)
   const [rows,     setRows]     = useState([{id:1,description:'',amount:'',date:new Date().toISOString().split('T')[0]}]);
   function saveKey(k) {
