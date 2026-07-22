@@ -12,10 +12,9 @@
   <script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"></script>
   <!-- Tailwind - synchronous so it scans all JSX class names -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- XLSX + Tesseract - large, only needed for import tab; defer so they don't block render -->
-  <!-- XLSX loads synchronously — needed immediately when user opens Import tab -->
-  <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-  <!-- Tesseract removed: in-browser OCR quality too poor for financial docs -->
+  <!-- XLSX: primary CDN + automatic fallback to jsDelivr -->
+  <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"
+          onerror="var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';document.head.appendChild(s)"></script>
   <script>tailwind.config={theme:{extend:{fontFamily:{sans:['Heebo','sans-serif']}}}};</script>
   <style>
     *{font-family:'Heebo','Segoe UI',sans-serif;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
@@ -944,26 +943,74 @@ Return ONLY valid JSON (no markdown): {"value":number,"ytd":number}
 If YTD not visible, omit the ytd field.`,
 };
 
-async function callGemini(file, docType, apiKey) {
-  const { data, mime } = await fileToBase64(file);
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
-  const body = {
-    contents: [{ parts: [
-      { text: GEMINI_PROMPTS[docType] || GEMINI_PROMPTS.bank },
-      { inline_data: { mime_type: mime, data } }
-    ]}],
-    generationConfig: { temperature: 0.1 }
-  };
-  const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-  if (!r.ok) {
-    const err = await r.json().catch(()=>({}));
-    throw new Error(err?.error?.message || `HTTP ${r.status}`);
+function extractJSONFromText(text) {
+  // Strip markdown fences
+  text = text.replace(/```(?:json)?/g, '').trim();
+  // Try to extract the first JSON array or object
+  const arrIdx = text.indexOf('[');
+  const objIdx = text.indexOf('{');
+  let start = -1;
+  if (arrIdx !== -1 && (objIdx === -1 || arrIdx < objIdx)) start = arrIdx;
+  else if (objIdx !== -1) start = objIdx;
+  if (start !== -1) text = text.slice(start);
+  // Find the matching closing bracket
+  const open = text[0];
+  const close = open === '[' ? ']' : '}';
+  let depth = 0, end = -1;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === open) depth++;
+    else if (text[i] === close) { depth--; if (depth === 0) { end = i; break; } }
   }
-  const d = await r.json();
-  let text = d.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  // strip markdown code fences if present
-  text = text.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
+  if (end !== -1) text = text.slice(0, end + 1);
   return JSON.parse(text);
+}
+
+async function callGemini(file, docType, apiKey) {
+  if (!apiKey) throw new Error('לא הוגדר מפתח API');
+
+  const { data, mime } = await fileToBase64(file);
+
+  // Try gemini-2.0-flash first, fall back to 1.5-flash
+  const models = ['gemini-2.0-flash','gemini-1.5-flash'];
+  let lastErr = null;
+
+  for (const model of models) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const body = {
+      contents: [{ parts: [
+        { text: GEMINI_PROMPTS[docType] || GEMINI_PROMPTS.bank },
+        { inline_data: { mime_type: mime, data } }
+      ]}],
+      generationConfig: { temperature: 0.1, responseMimeType: 'application/json' }
+    };
+    try {
+      const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+
+      if (!r.ok) {
+        let msg = `שגיאה ${r.status}`;
+        try {
+          const e = await r.json();
+          const raw = e?.error?.message || '';
+          if (r.status === 400) msg = `מפתח API לא תקין — ודא שהמפתח הוא מ-aistudio.google.com (${raw})`;
+          else if (r.status === 403) msg = `אין הרשאה — ייתכן שה-API לא מופעל בחשבון (${raw})`;
+          else if (r.status === 429) msg = 'הגעת למגבלת הבקשות — נסה שוב בעוד דקה';
+          else if (r.status === 404) { lastErr = new Error(`model not found: ${model}`); continue; }
+          else msg = raw || msg;
+        } catch {}
+        throw new Error(msg);
+      }
+
+      const d = await r.json();
+      const text = d.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      if (!text) throw new Error('Gemini החזיר תשובה ריקה — נסה שוב');
+      return extractJSONFromText(text);
+
+    } catch (e) {
+      if (e.message.includes('model not found')) { lastErr = e; continue; }
+      throw e;
+    }
+  }
+  throw lastErr || new Error('כל הדגמים נכשלו');
 }
 
 /* ── SCREENSHOT IMPORT with Gemini Vision ── */
@@ -1313,19 +1360,33 @@ function ImportTab({onImport, onUpdateInv}) {
 
   async function handleFile(file) {
     setErr(null);
+    // Load XLSX dynamically if not yet available (CDN fallback)
+    if (typeof XLSX === 'undefined') {
+      setErr('⏳ טוען ספריית Excel... נסה שוב בעוד שנייה');
+      try {
+        await new Promise((res,rej)=>{
+          const s=document.createElement('script');
+          s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+          s.onload=res; s.onerror=rej;
+          document.head.appendChild(s);
+        });
+        setErr(null);
+      } catch { setErr('לא ניתן לטעון ספריית Excel — בדוק חיבור אינטרנט'); return; }
+    }
     try {
       const buf=await file.arrayBuffer();
       const wb=XLSX.read(buf,{type:'array',cellDates:true});
+      if(!wb.SheetNames.length) throw new Error('הקובץ לא מכיל גיליונות');
       const ws=wb.Sheets[wb.SheetNames[0]];
       const data=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
       const clean=data.filter(r=>r.some(c=>String(c).trim()!==''));
+      if(!clean.length) throw new Error('הקובץ ריק');
       setRows(clean);
-      // auto-detect columns
       const hdr=clean[0].map(c=>String(c).toLowerCase().trim());
       const find=(...terms)=>hdr.findIndex(h=>terms.some(t=>h.includes(t)));
       setCols({
         date:   find('תאריך','date'),
-        desc:   find('תיאור','פירוט','שם','description'),
+        desc:   find('תיאור','פירוט','שם','description','אסמכתא'),
         debit:  find('חיוב','הוצאה','debit'),
         credit: find('זכות','הכנסה','credit'),
         amount: find('סכום','amount'),
