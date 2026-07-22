@@ -1028,10 +1028,54 @@ function ScreenshotImport({onImport, onUpdateInvestment}) {
   const fileRef = useRef();
   // manual transaction rows (fallback)
   const [rows,     setRows]     = useState([{id:1,description:'',amount:'',date:new Date().toISOString().split('T')[0]}]);
-  function saveKey(k) {
-    const key=k||keyInput.trim(); if(!key) return;
-    lsSet(LS.GEMINI,key); setApiKey(key); setKeyInput(''); setShowKey(false);
+  const [keyTesting, setKeyTesting] = useState(false);
+  const [keyStatus,  setKeyStatus]  = useState(null); // null | 'ok' | 'error'
+  const [keyErrMsg,  setKeyErrMsg]  = useState('');
+
+  async function testKey(key) {
+    setKeyTesting(true); setKeyStatus(null); setKeyErrMsg('');
+    try {
+      // Lightweight text-only call — no image needed
+      const models = ['gemini-2.0-flash','gemini-1.5-flash'];
+      let ok = false;
+      for (const model of models) {
+        const url=`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+        const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({contents:[{parts:[{text:'Reply with the single word OK.'}]}],
+                               generationConfig:{maxOutputTokens:5}})});
+        if(r.ok){ ok=true; break; }
+        if(r.status===404) continue; // try next model
+        const e=await r.json().catch(()=>({}));
+        const msg=e?.error?.message||'';
+        if(r.status===400||r.status===401||r.status===403){
+          setKeyErrMsg(r.status===400?`מפתח לא תקין — ודא שהעתקת מ-aistudio.google.com (${r.status})`
+                      :`שגיאת הרשאה — המפתח שגוי או לא מוגדר (${r.status}: ${msg})`);
+          setKeyStatus('error'); setKeyTesting(false); return;
+        }
+        setKeyErrMsg(`שגיאה ${r.status}: ${msg}`); setKeyStatus('error'); setKeyTesting(false); return;
+      }
+      if(ok){ setKeyStatus('ok'); }
+      else { setKeyErrMsg('המודלים לא זמינים — נסה שוב'); setKeyStatus('error'); }
+    } catch(e) {
+      setKeyErrMsg('שגיאת רשת: '+e.message); setKeyStatus('error');
+    }
+    setKeyTesting(false);
   }
+
+  async function saveKey(k) {
+    const key=k||keyInput.trim(); if(!key) return;
+    await testKey(key);
+    // Only save if test passed (keyStatus will be set after testKey resolves)
+    // We read the result via a closure trick below
+  }
+  // Actually save after successful test
+  useEffect(()=>{
+    if(keyStatus==='ok'&&keyInput.trim()){
+      const key=keyInput.trim();
+      lsSet(LS.GEMINI,key); setApiKey(key); setKeyInput(''); setShowKey(false);
+    }
+  },[keyStatus]);
+
   function reset() { setStage('type');setDocType(null);setImgUrl(null);setImgFile(null);setResult(null);setErr(null);setProg('');
     setRows([{id:1,description:'',amount:'',date:new Date().toISOString().split('T')[0]}]); }
 
@@ -1099,27 +1143,36 @@ function ScreenshotImport({onImport, onUpdateInvestment}) {
         <div style={{background:'linear-gradient(135deg,#1e3a5f,#0f172a)',borderRadius:16,
                      padding:18,marginBottom:14,color:'white'}}>
           <p style={{margin:'0 0 4px',fontWeight:700,fontSize:15}}>🤖 Gemini AI Vision — חינמי</p>
-          <p style={{margin:'0 0 12px',fontSize:12,opacity:.75,lineHeight:1.6}}>
-            קבל מפתח חינמי מ-<a href="https://aistudio.google.com" target="_blank" rel="noopener"
-              style={{color:'#4ade80',textDecoration:'underline'}}>aistudio.google.com</a>
-            {' '}← "Get API key" ← העתק ← הדבק כאן:
+          <p style={{margin:'0 0 4px',fontSize:12,opacity:.75,lineHeight:1.5}}>
+            קבל מפתח חינמי מ-<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener"
+              style={{color:'#4ade80',textDecoration:'underline'}}>aistudio.google.com/apikey</a>
+            {' '}← "Create API key" ← העתק
           </p>
-          {showKey?(
-            <div style={{display:'flex',gap:8}}>
-              <input value={keyInput} onChange={e=>setKeyInput(e.target.value)}
-                     onKeyDown={e=>e.key==='Enter'&&saveKey()}
-                     placeholder="AIza..." autoFocus
-                     style={{flex:1,background:'rgba(255,255,255,.15)',border:'1px solid rgba(255,255,255,.3)',
-                             borderRadius:10,padding:'10px 12px',color:'white',fontSize:13,
-                             direction:'ltr',fontFamily:'monospace',outline:'none'}}/>
-              <button onClick={()=>saveKey()} disabled={!keyInput.trim()}
-                      style={{background:'#22C55E',border:'none',borderRadius:10,padding:'10px 18px',
-                              color:'white',fontWeight:800,cursor:'pointer',opacity:keyInput.trim()?1:.4}}>
-                שמור ✓
-              </button>
+          <p style={{margin:'0 0 12px',fontSize:11,opacity:.5}}>
+            💡 המפתח מתחיל ב-<span style={{fontFamily:'monospace',color:'#86efac'}}>AIza...</span>
+          </p>
+          {showKey&&(
+            <div>
+              <div style={{display:'flex',gap:8,marginBottom:8}}>
+                <input value={keyInput} onChange={e=>{setKeyInput(e.target.value);setKeyStatus(null);setKeyErrMsg('');}}
+                       onKeyDown={e=>e.key==='Enter'&&keyInput.trim()&&saveKey()}
+                       placeholder="AIzaSy..." autoFocus
+                       style={{flex:1,background:'rgba(255,255,255,.15)',border:`1px solid ${keyStatus==='error'?'#f87171':keyStatus==='ok'?'#4ade80':'rgba(255,255,255,.3)'}`,
+                               borderRadius:10,padding:'10px 12px',color:'white',fontSize:13,
+                               direction:'ltr',fontFamily:'monospace',outline:'none'}}/>
+                <button onClick={()=>keyInput.trim()&&saveKey()}
+                        disabled={!keyInput.trim()||keyTesting}
+                        style={{background:keyTesting?'#6B7280':'#22C55E',border:'none',borderRadius:10,padding:'10px 18px',
+                                color:'white',fontWeight:800,cursor:keyTesting?'default':'pointer',minWidth:80}}>
+                  {keyTesting?<span className="spin" style={{display:'inline-block'}}>⏳</span>:'בדוק ✓'}
+                </button>
+              </div>
+              {keyStatus==='error'&&<p style={{color:'#f87171',fontSize:12,margin:'4px 0 0'}}>{keyErrMsg}</p>}
+              {keyStatus==='ok'&&<p style={{color:'#4ade80',fontSize:12,margin:'4px 0 0'}}>✅ המפתח תקין! שומר...</p>}
             </div>
-          ):(
-            <button onClick={()=>setShowKey(true)}
+          )}
+          {!showKey&&(
+            <button onClick={()=>{setShowKey(true);setKeyStatus(null);setKeyErrMsg('');}}
                     style={{background:'#22C55E',border:'none',borderRadius:10,padding:'10px 20px',
                             color:'white',fontWeight:700,fontSize:14,cursor:'pointer'}}>
               הגדר מפתח Gemini
@@ -1128,16 +1181,27 @@ function ScreenshotImport({onImport, onUpdateInvestment}) {
         </div>
       )}
 
-      {/* Key set — small row */}
+      {/* Key set — small status row with test button */}
       {apiKey&&stage!=='done'&&(
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',
-                     fontSize:12,color:'#6B7280',marginBottom:12,padding:'6px 12px',
-                     background:'#f0fdf4',borderRadius:10}}>
-          <span>✅ Gemini AI מוגדר — זיהוי אוטומטי פעיל</span>
-          <button onClick={()=>{lsSet(LS.GEMINI,'');setApiKey('');}}
-                  style={{border:'none',background:'none',color:'#9CA3AF',fontSize:11,cursor:'pointer'}}>
-            הסר מפתח
-          </button>
+                     fontSize:12,color:'#6B7280',marginBottom:12,padding:'8px 12px',
+                     background:'#f0fdf4',borderRadius:10,border:'1px solid #bbf7d0'}}>
+          <span style={{color:'#15803d',fontWeight:600}}>
+            {keyTesting?'⏳ בודק מפתח...'
+             :keyStatus==='error'?`⛔ ${keyErrMsg}`
+             :'✅ Gemini AI מוגדר'}
+          </span>
+          <div style={{display:'flex',gap:8}}>
+            <button onClick={()=>testKey(apiKey)} disabled={keyTesting}
+                    style={{border:'none',background:'#e0f2fe',color:'#0369a1',borderRadius:7,
+                            padding:'4px 10px',fontSize:11,cursor:'pointer',fontWeight:600}}>
+              בדוק
+            </button>
+            <button onClick={()=>{lsSet(LS.GEMINI,'');setApiKey('');setKeyStatus(null);}}
+                    style={{border:'none',background:'none',color:'#9CA3AF',fontSize:11,cursor:'pointer'}}>
+              הסר
+            </button>
+          </div>
         </div>
       )}
 
