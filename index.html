@@ -81,8 +81,9 @@ const CAT_RULES = [
   {kw:['ביטוח','הראל','מנורה','כלל','מגדל','איילון'],                                     cat:'ביטוח',          color:'#6366F1',emoji:'🛡️'},
   {kw:['מכבי','כללית','לאומית','סופר-פארם','super pharm','תרופות'],                        cat:'בריאות',         color:'#14B8A6',emoji:'🏥'},
   {kw:['amazon','אמזון','aliexpress','ebay','זארה','zara','h&m','קסטרו','קניון'],          cat:'קניות',          color:'#F59E0B',emoji:'🛍️'},
-  {kw:['משכורת','שכר','הכנסה','income','salary','bonus','בונוס'],                         cat:'הכנסה',          color:'#10B981',emoji:'💰'},
+  // דיור BEFORE הכנסה so "שכר דירה" matches דיור before "שכר" matches הכנסה
   {kw:['שכר דירה','שכירות','mortgage','משכנתה'],                                          cat:'דיור',           color:'#64748B',emoji:'🏠'},
+  {kw:['משכורת','שכר','הכנסה','income','salary','bonus','בונוס'],                         cat:'הכנסה',          color:'#10B981',emoji:'💰'},
 ];
 const DEF_CAT = {cat:'אחר',color:'#9CA3AF',emoji:'📦'};
 
@@ -875,14 +876,22 @@ function TransactionsTab({txs,onAdd,onDelete}) {
 
 /* ── OCR HELPERS ── */
 function parseDateIL(s) {
-  const clean=s.replace(/[.\-]/g,'/');
-  const parts=clean.split('/');
-  if(parts.length===3) {
-    const [a,b,c]=parts.map(Number);
-    const yr=c>31?c:(a>31?a:null);
-    if(yr){const[d,m]=c>31?[a,b]:[b,a];const dt=new Date(yr,m-1,d);if(!isNaN(dt))return dt.toISOString().split('T')[0];}
+  if (!s) return null;
+  const clean = s.replace(/[.\-]/g, '/');
+  const parts = clean.split('/');
+  if (parts.length === 3) {
+    const [a, b, c] = parts.map(Number);
+    let yr, d, m;
+    if (c > 31)      { yr = c; d = a; m = b; }  // DD/MM/YYYY
+    else if (a > 31) { yr = a; d = c; m = b; }  // YYYY/MM/DD
+    if (yr && d >= 1 && m >= 1 && m <= 12) {
+      // Use Date.UTC to avoid local-timezone shift when calling toISOString()
+      const dt = new Date(Date.UTC(yr, m - 1, d));
+      if (!isNaN(dt)) return dt.toISOString().split('T')[0];
+    }
   }
-  const d=new Date(s);return isNaN(d)?null:d.toISOString().split('T')[0];
+  const d = new Date(s);
+  return isNaN(d) ? null : d.toISOString().split('T')[0];
 }
 function parseBankOCR(text) {
   const DATE_RE  = /\b(\d{1,2}[./\-]\d{1,2}[./\-]\d{2,4}|\d{4}[./\-]\d{2}[./\-]\d{2})\b/g;
